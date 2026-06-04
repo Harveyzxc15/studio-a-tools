@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>STUDIO A 報表工具中心</title>
+<style>
+:root {
+  --bg: #0f1117; --card: #1a1d27; --border: #252836;
+  --accent: #4f8ef7; --green: #27ae60; --text: #dde2f0;
+  --muted: #6b7394; --yellow: #f5a623; --red: #e05c5c;
+  --code-bg: #1e2235;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system,"SF Pro Text","Helvetica Neue",sans-serif;
+  font-size: 14px; line-height: 1.6;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Layout ── */
+.sidebar {
+  position: fixed; top: 0; left: 0; width: 220px; height: 100vh;
+  background: var(--card); border-right: 1px solid var(--border);
+  overflow-y: auto; padding: 1.5rem 0;
+  display: flex; flex-direction: column;
+}
+.sidebar-logo { padding: 0 1.2rem 1.2rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+.sidebar-logo h2 { font-size: .85rem; color: var(--accent); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.sidebar-logo p { font-size: .72rem; color: var(--muted); margin-top: .2rem; }
+.nav-section { padding: .3rem 1.2rem .1rem; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin-top: .8rem; }
+.nav-item { display: flex; align-items: center; gap: .5rem; padding: .45rem 1.2rem; font-size: .82rem; color: var(--text); cursor: pointer; border-left: 2px solid transparent; }
+.nav-item:hover, .nav-item.active { background: rgba(79,142,247,.08); border-left-color: var(--accent); color: var(--accent); text-decoration: none; }
+.nav-item .icon { width: 18px; text-align: center; }
+
+.main { margin-left: 220px; padding: 2.5rem 3rem; max-width: 900px; }
+
+/* ── Cards ── */
+.page-title { margin-bottom: 2.5rem; }
+.page-title h1 { font-size: 1.6rem; font-weight: 700; }
+.page-title h1 span { color: var(--accent); }
+.page-title p { color: var(--muted); font-size: .85rem; margin-top: .4rem; }
+
+.section { margin-bottom: 3rem; }
+.section-title { font-size: 1rem; font-weight: 700; margin-bottom: 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: .5rem; }
+
+.tool-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  margin-bottom: .75rem; overflow: hidden;
+}
+.tool-header {
+  display: flex; align-items: center; gap: .75rem;
+  padding: .9rem 1.1rem; cursor: pointer; user-select: none;
+}
+.tool-header:hover { background: rgba(255,255,255,.02); }
+.tool-icon { font-size: 1.3rem; width: 28px; text-align: center; flex-shrink: 0; }
+.tool-meta { flex: 1; min-width: 0; }
+.tool-name { font-weight: 600; font-size: .9rem; }
+.tool-tags { display: flex; gap: .4rem; margin-top: .25rem; flex-wrap: wrap; }
+.tag { font-size: .68rem; padding: 1px 7px; border-radius: 4px; font-weight: 600; }
+.tag-cat  { background: rgba(79,142,247,.15); color: var(--accent); }
+.tag-sched{ background: rgba(245,166,35,.1); color: var(--yellow); }
+.tag-auto { background: rgba(39,174,96,.1); color: var(--green); }
+.tag-warn { background: rgba(224,92,92,.1); color: var(--red); }
+.tool-chevron { color: var(--muted); font-size: .8rem; transition: transform .2s; flex-shrink: 0; }
+.tool-card.open .tool-chevron { transform: rotate(90deg); }
+.tool-body { display: none; padding: 0 1.1rem 1.1rem 1.1rem; border-top: 1px solid var(--border); }
+.tool-card.open .tool-body { display: block; }
+.tool-desc { font-size: .82rem; color: var(--muted); margin-top: .8rem; line-height: 1.7; }
+.tool-desc strong { color: var(--text); }
+.tool-desc code {
+  background: var(--code-bg); color: #7ec8f0; padding: 1px 5px;
+  border-radius: 3px; font-family: "SF Mono",Menlo,monospace; font-size: .78rem;
+}
+.tool-desc pre {
+  background: var(--code-bg); padding: .8rem 1rem; border-radius: 6px;
+  margin: .6rem 0; overflow-x: auto; font-family: "SF Mono",Menlo,monospace;
+  font-size: .78rem; color: #a8d8ea; line-height: 1.6;
+}
+.tool-desc .warn-box {
+  background: rgba(224,92,92,.08); border: 1px solid rgba(224,92,92,.25);
+  border-left: 3px solid var(--red); border-radius: 6px;
+  padding: .6rem .9rem; margin: .6rem 0; font-size: .8rem; color: #dda0a0;
+}
+.tool-desc .info-box {
+  background: rgba(79,142,247,.07); border-left: 3px solid var(--accent);
+  padding: .6rem .9rem; border-radius: 6px; margin: .6rem 0; font-size: .8rem;
+}
+.step { display: flex; gap: .7rem; margin: .4rem 0; }
+.step-num {
+  background: var(--accent); color: #fff; width: 20px; height: 20px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: .7rem; font-weight: 700; flex-shrink: 0; margin-top: 2px;
+}
+
+/* ── Setup ── */
+.req-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: .5rem; }
+.req-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .9rem 1rem; }
+.req-card h4 { font-size: .82rem; margin-bottom: .3rem; }
+.req-card p  { font-size: .78rem; color: var(--muted); }
+.req-card code { font-size: .74rem; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .main { margin-left: 0; padding: 1.5rem; }
+  .req-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <h2>STUDIO A</h2>
+    <p>報表工具中心</p>
+  </div>
+
+  <div class="nav-section">快速導覽</div>
+  <a class="nav-item" href="#setup"><span class="icon">⚙️</span>環境設定</a>
+
+  <div class="nav-section">Web 服務</div>
+  <a class="nav-item" href="#north1"><span class="icon">📊</span>北一區週報</a>
+  <a class="nav-item" href="#north2"><span class="icon">📊</span>北二區週報</a>
+  <a class="nav-item" href="#hr"><span class="icon">👥</span>人資管理系統</a>
+  <a class="nav-item" href="#order"><span class="icon">📦</span>訂購追蹤系統</a>
+
+  <div class="nav-section">週報腳本</div>
+  <a class="nav-item" href="#repair"><span class="icon">🔧</span>維修中心週報</a>
+  <a class="nav-item" href="#yoy"><span class="icon">📈</span>維修中心 YOY</a>
+  <a class="nav-item" href="#voucher"><span class="icon">🎟️</span>三店禮券週報</a>
+  <a class="nav-item" href="#warranty"><span class="icon">🛡️</span>保固搭售率</a>
+  <a class="nav-item" href="#weekly-diff"><span class="icon">📋</span>週差異報告</a>
+  <a class="nav-item" href="#dss"><span class="icon">🔍</span>DSS 零搭售</a>
+
+  <div class="nav-section">月報 / 自動化</div>
+  <a class="nav-item" href="#arpedia"><span class="icon">📱</span>ARpedia 日報</a>
+  <a class="nav-item" href="#kpi"><span class="icon">🏆</span>KPI 月報</a>
+  <a class="nav-item" href="#sacare"><span class="icon">💊</span>SACare 計算</a>
+  <a class="nav-item" href="#mycoach"><span class="icon">🤖</span>MyCoach 週報</a>
+</nav>
+
+<!-- Main -->
+<div class="main">
+
+  <div class="page-title">
+    <h1>STUDIO A <span>報表工具中心</span></h1>
+    <p>北一/北二區報表工具使用說明 · 共 14 個工具</p>
+  </div>
+
+  <!-- ── 環境設定 ── -->
+  <div class="section" id="setup">
+    <div class="section-title">⚙️ 環境設定（首次使用必看）</div>
+
+    <div class="req-grid">
+      <div class="req-card">
+        <h4>🐍 Python 3.10+</h4>
+        <p>大多數腳本需要 Python 3.10 以上。安裝完後執行：</p>
+        <pre>pip3 install openpyxl rumps requests</pre>
+      </div>
+      <div class="req-card">
+        <h4>☕ Java 8（EPB 必要）</h4>
+        <p>EPB 資料橋接需要 JDK 1.8。確認路徑：</p>
+        <pre>/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/</pre>
+      </div>
+      <div class="req-card">
+        <h4>📡 EPB Shell</h4>
+        <p>從公司 EPBrowser 取得 shell.jar，確認路徑：</p>
+        <pre>/Library/EPBrowser/EPB/Shell/shell.jar</pre>
+      </div>
+      <div class="req-card">
+        <h4>🔑 EPB 帳號</h4>
+        <p>需要 EPB 系統帳號（公司內部）。Java 橋接使用 SOAP 直連，無需另外設定。</p>
+      </div>
+    </div>
+
+    <div class="tool-desc" style="margin-top:1rem;">
+      <div class="info-box">
+        📂 <strong>腳本取得方式：</strong>向 Bob 索取腳本資料夾，或從本 repo 下載。<br>
+        各腳本中的 <code>/Users/bob.1469/</code> 路徑需改成你自己的使用者路徑。
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Web 服務 ── -->
+  <div class="section">
+    <div class="section-title">🌐 Web 服務（瀏覽器介面）</div>
+
+    <div class="tool-card" id="north1">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">📊</div>
+        <div class="tool-meta">
+          <div class="tool-name">北一區週報產生器</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">Web 介面</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          瀏覽器操作介面，選擇日期後自動查 EPB 並產生北一區六門市週報 Excel（含 KPI 月報數字）。<br><br>
+          <strong>啟動方式：</strong>
+          <pre>cd ~/Desktop/北一區週報-app
+python3 server.py</pre>
+          啟動後開啟瀏覽器：<code>http://127.0.0.1:8782/</code><br><br>
+          <strong>涵蓋門市：</strong>士林、微風、美麗華、阿波羅、高島屋、羅東<br>
+          <strong>SHOP_ID：</strong>4, 5, 24, 46, 54, 57
+          <div class="info-box">依賴 EPB Shell Java 橋接，啟動前確認 EPB 連線正常。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="north2">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">📊</div>
+        <div class="tool-meta">
+          <div class="tool-name">北二區週報產生器</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">Web 介面</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          與北一區相同介面，涵蓋北二區門市。<br><br>
+          <strong>啟動方式：</strong>
+          <pre>cd ~/Desktop/north2-weekly-report
+python3 server.py</pre>
+          啟動後開啟瀏覽器：<code>http://127.0.0.1:8783/</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="hr">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">👥</div>
+        <div class="tool-meta">
+          <div class="tool-name">人資管理系統</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">Web 介面</span>
+            <span class="tag tag-cat">Flask App</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          本地 Flask App，管理六門市員工資料（姓名、職類、比重、門市歸屬）。<br><br>
+          <strong>啟動方式：</strong>
+          <pre>cd ~/hr_app
+python3 app.py</pre>
+          開啟 <code>http://localhost:5555</code><br><br>
+          <strong>依賴：</strong><code>pip3 install flask</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="order">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">📦</div>
+        <div class="tool-meta">
+          <div class="tool-name">訂購追蹤系統</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">Web 介面</span>
+            <span class="tag tag-cat">Flask App</span>
+            <span class="tag tag-auto">launchd 自動掃描</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          自動掃描 Apple Mail 抓訂購信，偵測 EPB 090J/140eb 出貨/到貨狀態，
+          透過 OneSignal Web Push 通知門市。<br><br>
+          <strong>啟動方式：</strong>
+          <pre>cd ~/order_tracker
+python3 app.py</pre>
+          開啟 <code>http://localhost:5556</code><br><br>
+          <strong>launchd：</strong>開機自動啟動 + 每 2 小時自動掃描 Mail<br>
+          <strong>OneSignal App ID：</strong><code>a4c887b2</code>（Push 通知服務）
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 週報腳本 ── -->
+  <div class="section">
+    <div class="section-title">📂 週報腳本</div>
+
+    <div class="tool-card" id="repair">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">🔧</div>
+        <div class="tool-meta">
+          <div class="tool-name">維修中心週報</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">週報</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          輸出六時段業績（本週/上週/月累積/上月/本年/去年同期）× 士林、花蓮、羅東三維修中心。<br><br>
+          <strong>執行方式：</strong>
+          <pre>python3 ~/Desktop/維修中心週報/repair_report.py         # 自動抓最近完整週
+python3 ~/Desktop/維修中心週報/repair_report.py 5/28     # 指定日期（週六）</pre>
+          <strong>日期格式：</strong><code>M/D</code> 或 <code>YYYY-MM-DD</code>，輸入週內任一天均可（自動找週六）<br>
+          <strong>輸出：</strong><code>~/工具中心/輸出/維修中心/維修中心週報_MMDD-MMDD.xlsx</code><br><br>
+          <strong>週次定義：</strong>週日～週六（非週一起算）
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="yoy">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">📈</div>
+        <div class="tool-meta">
+          <div class="tool-name">維修中心 YOY 分析</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">週報</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          今年 vs 去年同期對比，輸出 5 工作表 Excel（維修收入、3PP、原廠周邊、OEM、3PP 明細）。<br><br>
+          <strong>執行方式：</strong>
+          <pre>python3 ~/Desktop/維修中心週報/repair_yoy_report.py
+python3 ~/Desktop/維修中心週報/repair_yoy_report.py 5/28</pre>
+          <strong>輸出：</strong><code>~/工具中心/輸出/維修中心/維修中心YOY分析_2026YTD_MMDD.xlsx</code>
+          <div class="info-box">每週日 08:00 也有 launchd 自動執行一次（yoy_report.log 記錄）。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="voucher">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">🎟️</div>
+        <div class="tool-meta">
+          <div class="tool-name">三店禮券週報</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">週報</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          計算高島屋/微風/美麗華禮券使用金額，輸出 7 工作表 Excel（週/月/7時段對比）。<br><br>
+          <strong>執行方式：</strong>
+          <pre>python3 ~/Desktop/三店禮券週報/voucher_weekly.py
+python3 ~/Desktop/三店禮券週報/voucher_weekly.py 5/28</pre>
+          <strong>輸出：</strong><code>~/工具中心/輸出/禮券週報/三店禮券週報_YYYYMMDD.xlsx</code><br><br>
+          <div class="warn-box">
+            ⚠️ 計算時排除以下交易：<br>
+            · <code>emp_id1 = 'SA999'</code>（月底入帳發行，非顧客使用）<br>
+            · <code>cat3 = '3027'</code>（禮券相關品類）<br>
+            · 禮券品類：cat6 = 6884 / 6888 / 6889（負值折抵，需用 signed SUM 再 ABS）
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="warranty">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">🛡️</div>
+        <div class="tool-meta">
+          <div class="tool-name">保固搭售率</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">週報 / 月報</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          六門市 × 五品類搭售率，含月累積雙工作表。<br><br>
+          <strong>目標搭售率：</strong>Mac 60% / iPhone 19% / iPad 50% / Watch 40% / AirPods 35%<br><br>
+          <strong>執行方式：</strong>
+          <pre>python3 ~/Desktop/保固搭售率/warranty_report.py          # 自動最近完整週
+python3 ~/Desktop/保固搭售率/warranty_report.py 5/24 5/30 # 指定區間</pre>
+          <strong>輸出：</strong><code>~/工具中心/輸出/保固搭售率/保固搭售率_MMDD-MMDD.xlsx</code><br><br>
+          <div class="warn-box">
+            ⚠️ 計算規則：<br>
+            · 分子含「檢測新機 SACare」（cat code 包含在內）<br>
+            · 分母 = 各品類主機台數<br>
+            · Mac 分子：SAcare (brand=999, cat3=3012) + AppleCare (brand=265, cat3=4969)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="weekly-diff">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">📋</div>
+        <div class="tool-meta">
+          <div class="tool-name">北一區週差異報告</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">週報</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          比較相鄰兩週業績差異，輸出互動式 HTML 報告（各門市展開 + 匯總表）。<br><br>
+          <strong>執行方式：</strong>
+          <pre>python3 ~/Desktop/北一區週差異報告.py                      # 自動
+python3 ~/Desktop/北一區週差異報告.py --week 2026-05-28     # 指定週（週六日期）
+python3 ~/Desktop/北一區週差異報告.py --no-open             # 不自動開啟瀏覽器</pre>
+          <strong>輸出：</strong><code>~/工具中心/輸出/週差異報告/北一區週差異報告_YYYY-MM-DD.html</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="dss">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">🔍</div>
+        <div class="tool-meta">
+          <div class="tool-name">DSS 零搭售分析</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">搭售</span>
+            <span class="tag tag-sched">每週手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          分析主機零搭售名單（DSS 800AB 三表結構）。<br><br>
+          <strong>使用步驟：</strong>
+          <div class="step"><div class="step-num">1</div><div>從 DSS 匯出 800AB 搭售率報表（週 + 月累積，人版 + 總表 共 4 個 xlsx）</div></div>
+          <div class="step"><div class="step-num">2</div><div>放入 <code>~/Desktop/北一區週報AI/DSS分析工具/來源檔/</code></div></div>
+          <div class="step"><div class="step-num">3</div><div>執行 <code>python3 dss_zero_analysis.py</code></div></div>
+          <strong>輸出：</strong><code>DSS分析工具/輸出結果/</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 月報/自動化 ── -->
+  <div class="section">
+    <div class="section-title">🗓️ 月報 / 自動化</div>
+
+    <div class="tool-card" id="arpedia">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">📱</div>
+        <div class="tool-meta">
+          <div class="tool-name">ARpedia 日報</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">日報</span>
+            <span class="tag tag-auto">每日 08:00 自動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          每日 08:00 由 launchd 自動執行，查詢六門市昨日/本週/月累/年累 ARpedia 套組銷售量（brand_id='496'）。<br><br>
+          <strong>手動執行：</strong>
+          <pre>python3 ~/Desktop/ARpedia日報/arpedia_daily.py</pre>
+          <strong>查看記錄：</strong>
+          <pre>cat ~/Desktop/ARpedia日報/arpedia_daily.log</pre>
+          <strong>launchd plist：</strong>位於 <code>~/Library/LaunchAgents/</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="kpi">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">🏆</div>
+        <div class="tool-meta">
+          <div class="tool-name">KPI 月報</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">月報</span>
+            <span class="tag tag-sched">每月手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          計算北一區六門市員工月 KPI（原廠毛利、副廠毛利、SACare、ARpedia、喇叭、CPU）及夥伴/店長獎金，
+          輸出全版 + 門市版兩個互動式 HTML。<br><br>
+          <strong>資料夾結構：</strong>
+          <pre>KPI計算/
+├── 執行.command          ← 雙擊執行
+├── kpi_calculator.py
+├── 輸入/
+│   ├── 目標/             ← 放目標 Excel（月初設定一次）
+│   └── 本月報表/         ← 放三份 EPB 報表
+└── 結果/                 ← HTML 輸出</pre>
+          <strong>月初作業（一次）：</strong>
+          <div class="step"><div class="step-num">1</div><div>開啟 <code>輸入/目標/北一區KPI目標設定模板.xlsx</code></div></div>
+          <div class="step"><div class="step-num">2</div><div>填六門市原廠/副廠/SACare 毛利目標（未稅）</div></div>
+          <div class="step"><div class="step-num">3</div><div>欄 L 填每位員工 CPU 月目標台數</div></div>
+          <strong>月中/月底執行：</strong>
+          <div class="step"><div class="step-num">1</div><div>從 EPB 匯出 Report 13、Report 14、原始交易明細到 <code>輸入/本月報表/</code></div></div>
+          <div class="step"><div class="step-num">2</div><div>雙擊 <code>執行.command</code></div></div>
+          <div class="step"><div class="step-num">3</div><div>等 ~30 秒，瀏覽器自動開啟</div></div>
+          <div class="warn-box">
+            ⚠️ 毛利數字為月中追蹤用（不含教育價/回補），非公司正式薪資計算，月底以公司核定數字為準。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="sacare">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">💊</div>
+        <div class="tool-meta">
+          <div class="tool-name">SACare 金額計算</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">月報</span>
+            <span class="tag tag-sched">每月手動</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          計算 SACare 搭售毛利金額。<br><br>
+          <strong>公式：</strong><code>銷售金額 × 50% ÷ 1.05</code>（未稅毛利）<br><br>
+          <strong>使用步驟：</strong>
+          <div class="step"><div class="step-num">1</div><div>從 EPB 匯出 SACare 項目查詢 xlsx（個人或門市皆可）</div></div>
+          <div class="step"><div class="step-num">2</div><div>放入 <code>SACare計算/計算檔案/</code></div></div>
+          <div class="step"><div class="step-num">3</div><div>雙擊 <code>SACare計算/執行.command</code></div></div>
+          <strong>輸出：</strong><code>SACare計算/結果/SACare金額結果_YYYYMMDD_HHMM.xlsx</code><br>
+          計算完來源檔自動移至 <code>已處理/</code><br><br>
+          <div class="warn-box">
+            ⚠️ EPB 直查規則：<code>brand_id='999'</code>、<code>cat3_id='3012'</code>、<code>TRANS_TYPE IN ('A','E','H')</code><br>
+            · 排除 G（訂金），否則分期商品重複計算<br>
+            · 使用 <code>北一區週報-app/data/SAcare對應價目表.xlsx</code>（320 筆），勿用 644 筆版本
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool-card" id="mycoach">
+      <div class="tool-header" onclick="toggle(this)">
+        <div class="tool-icon">🤖</div>
+        <div class="tool-meta">
+          <div class="tool-name">MyCoach 週報自動化</div>
+          <div class="tool-tags">
+            <span class="tag tag-cat">GitHub Actions</span>
+            <span class="tag tag-auto">每週一 11:00 自動</span>
+            <span class="tag tag-warn">⚠️ 季度 2026-06-27 結束需更新</span>
+          </div>
+        </div>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-desc">
+          每週一台灣時間 11:00 自動抓 MyCoach 各門市完課數，計算季度達成率，發送 Discord 通知。<br><br>
+          <strong>技術架構：</strong>GitHub Actions Self-hosted Runner（本機 Mac），
+          讀取本機 Chrome Cookie 繞過 MyCoach 驗證碼限制。<br><br>
+          <strong>手動觸發：</strong>
+          <pre>gh workflow run weekly_report.yml</pre>
+          <strong>Repo：</strong><a href="https://github.com/Harveyzxc15/mycoach-report" target="_blank">Harveyzxc15/mycoach-report</a><br><br>
+          <div class="warn-box">
+            ⚠️ 季度結束需更新 <code>mycoach_report.py</code>：<br>
+            <code>SEASON_START</code>、<code>SEASON_END</code>、<code>SEASON_WEEKS</code><br>
+            目前：SEASON_END = <strong>2026-06-27</strong>
+          </div>
+          <div class="info-box">
+            Session 過期時：在本機 Chrome 重新登入 MyCoach，下次 workflow 自動讀取新 Cookie。<br>
+            Runner 重開機後需重新執行 <code>~/actions-runner/run.sh</code>。
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end section -->
+
+</div><!-- end main -->
+
+<script>
+function toggle(header) {
+  const card = header.closest('.tool-card');
+  card.classList.toggle('open');
+}
+// Highlight active nav item on scroll
+const sections = document.querySelectorAll('[id]');
+const navItems = document.querySelectorAll('.nav-item');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY >= s.offsetTop - 100) current = s.id;
+  });
+  navItems.forEach(n => {
+    n.classList.toggle('active', n.getAttribute('href') === '#' + current);
+  });
+}, { passive: true });
+</script>
+</body>
+</html>
