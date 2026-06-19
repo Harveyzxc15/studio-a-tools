@@ -146,6 +146,13 @@ def print_headcount(region=None):
         return (f"    {pad('門市', 12)}{pad('本日銷售人數', 14, '>')}"
                 f"{pad('本日休假人數', 14, '>')}{pad('ARpedia Demo', 14, '>')}")
 
+    def cell(v):
+        """數值→(顯示, 數字)；非數值（標籤找不到/格式跑掉）→('異常', None)。"""
+        if isinstance(v, (int, float)):
+            return str(int(v)), int(v)
+        return '異常', None
+
+    anomalies = []
     g_sale = g_off = g_demo = 0
     for reg in regions:
         if len(regions) > 1:
@@ -158,15 +165,18 @@ def print_headcount(region=None):
                 print(f"    {pad(store, 12)}{pad('未收到', 14, '>')}"
                       f"{pad('', 14, '>')}{pad('', 14, '>')}")
                 continue
-            sale, off = read_headcount(rec['xlsx'])
-            sale, off = _i(sale), _i(off)
+            sale_raw, off_raw = read_headcount(rec['xlsx'])
+            s_disp, s_num = cell(sale_raw)
+            o_disp, o_num = cell(off_raw)
+            if s_num is None or o_num is None:
+                anomalies.append(store)
+            r_sale += s_num or 0
+            r_off += o_num or 0
             demo = rec['demo']
-            r_sale += sale
-            r_off += off
             r_demo += _i(demo)
             demo_s = '未填' if demo is None else demo
-            print(f"    {pad(store, 12)}{pad(sale, 14, '>')}"
-                  f"{pad(off, 14, '>')}{pad(demo_s, 14, '>')}")
+            print(f"    {pad(store, 12)}{pad(s_disp, 14, '>')}"
+                  f"{pad(o_disp, 14, '>')}{pad(demo_s, 14, '>')}")
         print(f"    {pad('小計', 12)}{pad(r_sale, 14, '>')}"
               f"{pad(r_off, 14, '>')}{pad(r_demo, 14, '>')}\n")
         g_sale += r_sale
@@ -175,6 +185,9 @@ def print_headcount(region=None):
     if len(regions) > 1:
         print(f"  {pad('總計（北一＋北二）', 14)}{pad(g_sale, 12, '>')}"
               f"{pad(g_off, 14, '>')}{pad(g_demo, 14, '>')}")
+    if anomalies:
+        print(f"\n  ⚠️  格式異常（讀不到人數，未計入小計）：{'、'.join(anomalies)}"
+              f"\n      該店日報模板可能變了，請開附件確認。")
 
 
 if __name__ == '__main__':
