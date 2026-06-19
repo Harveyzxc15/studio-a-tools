@@ -49,8 +49,31 @@ def _bar(done, total, width=24):
     return '[' + '█' * filled + '·' * (width - filled) + f'] {done}/{total}'
 
 
+_DEMO_RE = re.compile(r'[Dd]emo\s*次數\s*[：:]\s*(\d+)')   # 容各種寫法，避開「Demo 照片」
+
+
+def _body_text(msg):
+    """取信件純文字內文。"""
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    for p in parts:
+        if p.get_content_type() == 'text/plain':
+            try:
+                return p.get_payload(decode=True).decode(
+                    p.get_content_charset() or 'utf-8', 'ignore')
+            except Exception:
+                continue
+    return ''
+
+
+def _parse_demo(msg):
+    """從內文抓 ARpedia Demo 次數，找不到回 None。"""
+    m = _DEMO_RE.search(_body_text(msg))
+    return int(m.group(1)) if m else None
+
+
 def collect_reports(since_days=4, progress=True):
-    """掃收件匣，回傳 {(date_token, code): xlsx_bytes}，只收北一/北二 13 家。"""
+    """掃收件匣，回傳 {(date_token, code): {'xlsx': bytes, 'demo': int|None}}。
+    只收北一/北二 13 家。"""
     cut = (datetime.now() - timedelta(days=since_days)).timestamp()
     files = [f for f in glob.glob(
                 os.path.join(MAIL_BASE, '*/INBOX.mbox/**/Messages/*.emlx'),
@@ -78,7 +101,8 @@ def collect_reports(since_days=4, progress=True):
                     continue
                 key = (md.group(1), mc.group(1))
                 if key not in found:                    # 同一封重複下載只取一次
-                    found[key] = p.get_payload(decode=True)
+                    found[key] = {'xlsx': p.get_payload(decode=True),
+                                  'demo': _parse_demo(msg)}
         except Exception:
             continue
     if progress and total:
@@ -109,7 +133,7 @@ def print_headcount(region=None):
     region=None 印北一＋北二（含總計）；給 '北一區'/'北二區' 只印該區。"""
     regions = [region] if region in CODES else list(CODES)
     label = region if region in CODES else '北一＋北二'
-    print(f"\n【門市日報 本日銷售/休假人數（{label}）】")
+    print(f"\n【門市日報 本日銷售/休假人數、ARpedia Demo（{label}）】")
     reports = collect_reports()
     if not reports:
         print("  ⚠️  收件匣近 4 天找不到門市 Daily report")
@@ -118,27 +142,39 @@ def print_headcount(region=None):
     d = datetime.strptime(target, '%Y%m%d')
     print(f"  資料日期：{d.strftime('%Y-%m-%d')}\n")
 
-    g_sale = g_off = 0
+    def hdr():
+        return (f"    {pad('門市', 12)}{pad('本日銷售人數', 14, '>')}"
+                f"{pad('本日休假人數', 14, '>')}{pad('ARpedia Demo', 14, '>')}")
+
+    g_sale = g_off = g_demo = 0
     for reg in regions:
         if len(regions) > 1:
             print(f"  ＜{reg}＞")
-        print(f"    {pad('門市', 12)}{pad('本日銷售人數', 14, '>')}{pad('本日休假人數', 14, '>')}")
-        r_sale = r_off = 0
+        print(hdr())
+        r_sale = r_off = r_demo = 0
         for store, code in CODES[reg].items():
-            data = reports.get((target, code))
-            if data is None:
-                print(f"    {pad(store, 12)}{pad('未收到', 14, '>')}{pad('', 14, '>')}")
+            rec = reports.get((target, code))
+            if rec is None:
+                print(f"    {pad(store, 12)}{pad('未收到', 14, '>')}"
+                      f"{pad('', 14, '>')}{pad('', 14, '>')}")
                 continue
-            sale, off = read_headcount(data)
+            sale, off = read_headcount(rec['xlsx'])
             sale, off = _i(sale), _i(off)
+            demo = rec['demo']
             r_sale += sale
             r_off += off
-            print(f"    {pad(store, 12)}{pad(sale, 14, '>')}{pad(off, 14, '>')}")
-        print(f"    {pad('小計', 12)}{pad(r_sale, 14, '>')}{pad(r_off, 14, '>')}\n")
+            r_demo += _i(demo)
+            demo_s = '未填' if demo is None else demo
+            print(f"    {pad(store, 12)}{pad(sale, 14, '>')}"
+                  f"{pad(off, 14, '>')}{pad(demo_s, 14, '>')}")
+        print(f"    {pad('小計', 12)}{pad(r_sale, 14, '>')}"
+              f"{pad(r_off, 14, '>')}{pad(r_demo, 14, '>')}\n")
         g_sale += r_sale
         g_off += r_off
+        g_demo += r_demo
     if len(regions) > 1:
-        print(f"  {pad('總計（北一＋北二）', 14)}{pad(g_sale, 12, '>')}{pad(g_off, 14, '>')}")
+        print(f"  {pad('總計（北一＋北二）', 14)}{pad(g_sale, 12, '>')}"
+              f"{pad(g_off, 14, '>')}{pad(g_demo, 14, '>')}")
 
 
 if __name__ == '__main__':
