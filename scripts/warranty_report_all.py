@@ -28,8 +28,8 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 # ── 連線/路徑設定（硬編碼，與 保固搭售率/warranty_report.py 一致）──
 JAVA        = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/bin/java"
-EPB_CP      = "/Users/bob.1469/Desktop/北一區週報-app:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*"
-EPB_CWD     = "/Users/bob.1469/Desktop/北一區週報-app"
+EPB_CP      = "/Users/bob.1469/Desktop/north1-weekly-report:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*"
+EPB_CWD     = "/Users/bob.1469/Desktop/north1-weekly-report"
 MAIL_BASE   = Path("~/Library/Mail/V10").expanduser()
 OUTPUT_BASE = Path("~/工具中心/輸出/每日追蹤主機").expanduser()
 
@@ -140,7 +140,7 @@ def query_period(cfg, d_start, d_end):
     air = defaultdict(int)
     for r in epb(f"SELECT l.shop_id, {QTY} FROM poslinev_bi l "
                  f"WHERE l.org_id='01' AND l.shop_id IN ({si}) AND {cond} "
-                 f"AND l.cat2_id<>'2029' AND l.cat6_id IN ('6258','6312','6330') AND l.cat3_id='3002' "
+                 f"AND l.cat2_id<>'2029' AND l.cat4_id='4014' AND l.cat6_id<>'6070' AND l.cat3_id='3002' "
                  f"GROUP BY l.shop_id"):
         try:
             air[str(int(r['SHOP_ID']))] += int(float(r.get('UNITS', 0) or 0))
@@ -305,15 +305,18 @@ def scan_mysetup(kw_map, lo_date, hi_date):
     for path in emlx_files:
         try:
             # 快速預篩：先讀檔頭，原始 bytes 不含關鍵字就跳過（省下對數千封非候選信的 MIME parse）
+            # 用寄件者過濾（中文標題會被 MIME 編碼，raw bytes 找不到 'Setup Data'）
             with open(path, 'rb') as f:
                 raw = f.read(32768)
-                if b'Personal Setup' not in raw or b'Setup Data' not in raw:
+                if b'guestbook_support@group.apple.com' not in raw:
                     continue
                 raw += f.read()  # 候選信才補讀完整內容（attachment 需要）
             if b'\n' not in raw: continue
             msg = _parse_emlx(raw)
             subj = _decode_mail_str(msg.get('Subject', ''))
-            if 'Personal Setup' not in subj or 'Setup Data' not in subj: continue
+            # 2026-06-29 起 Apple 改中文標題：Personal Setup ：数据 29-6月-26 - 29-6月-26
+            if 'Personal Setup' not in subj: continue
+            if 'Setup Data' not in subj and '数据' not in subj and '數據' not in subj: continue
             data_date = _subject_date(subj)
             if data_date is None or not (lo_date <= data_date <= hi_date): continue
             if data_date in seen_dates: continue
@@ -643,6 +646,11 @@ def main():
 
     ms_range = mysetup_sum(by_date, d_start, d_end)
     ms_month = mysetup_sum(by_date, m_start, d_end)
+
+    missing = [d for d in (d_start + timedelta(days=i) for i in range((d_end - d_start).days + 1))
+               if d.isoformat() not in by_date]
+    if missing:
+        print(f"⚠️  Mysetup 信件缺漏：{', '.join(fmt(d) for d in missing)} 沒收到 Personal Setup 信，提交率會偏低")
 
     # ── 組裝 Excel（4 分頁）──
     wb = Workbook()
