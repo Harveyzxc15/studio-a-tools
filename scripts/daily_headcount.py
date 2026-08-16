@@ -124,20 +124,33 @@ def read_headcount(data):
     return sale, off
 
 
+def read_traffic(data):
+    """從 xlsx bytes 讀 (今日來客數, 本月累積來客數)，找標籤抓右邊兩格。"""
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.strip() == '來客數':
+                return (ws.cell(cell.row, cell.column + 1).value,
+                        ws.cell(cell.row, cell.column + 2).value)
+    return None, None
+
+
 def _i(v):
     return int(v) if isinstance(v, (int, float)) else 0
 
 
 def print_headcount(region=None):
     """印出門市本日銷售/休假人數明細 + 小計。
-    region=None 印北一＋北二（含總計）；給 '北一區'/'北二區' 只印該區。"""
+    region=None 印北一＋北二（含總計）；給 '北一區'/'北二區' 只印該區。
+    回傳 (reports, 資料日期token)，供呼叫端沿用同一批信件（免重掃）。"""
     regions = [region] if region in CODES else list(CODES)
     label = region if region in CODES else '北一＋北二'
     print(f"\n【門市日報 本日銷售/休假人數、ARpedia Demo（{label}）】")
     reports = collect_reports()
     if not reports:
         print("  ⚠️  收件匣近 4 天找不到門市 Daily report")
-        return
+        return {}, None
     target = max(t for t, _ in reports)                 # 最新一份日報日期
     d = datetime.strptime(target, '%Y%m%d')
     print(f"  資料日期：{d.strftime('%Y-%m-%d')}\n")
@@ -188,6 +201,62 @@ def print_headcount(region=None):
     if anomalies:
         print(f"\n  ⚠️  格式異常（讀不到人數，未計入小計）：{'、'.join(anomalies)}"
               f"\n      該店日報模板可能變了，請開附件確認。")
+    return reports, target
+
+
+def print_traffic_compare(reports, target, yesterday, tr_data, region):
+    """比對門市日報自填的「來客數」與工具查到的人流（ShopperTrak／無計數器公式）。
+
+    tr_data[store] = [昨日, 月累, 上月同期]；日報只有「今日／本月累積」兩欄可比。
+    """
+    if not reports:
+        return
+    if target != yesterday.strftime('%Y%m%d'):
+        print(f"  ⚠️  最新日報是 {target}（非昨日 {yesterday}），人流比對略過")
+        return
+
+    print(f"【人流比對：日報自填 vs 工具查詢（{region}）】")
+    header = (pad('門市', 12) + pad('日報昨日', 10, '>') + pad('工具昨日', 10, '>')
+              + pad('差異', 10, '>') + pad('日報月累', 12, '>')
+              + pad('工具月累', 12, '>') + pad('差異', 10, '>'))
+    print(header)
+    print('-' * w(header))
+
+    def fmt(v):
+        """日報欄：非數值＝門市沒填。"""
+        return f"{v:,}" if isinstance(v, (int, float)) else '未填'
+
+    def fmt_t(v):
+        """工具欄：None＝這店沒查到（無計數器／ShopperTrak 略過），不是門市沒填。"""
+        return f"{v:,}" if isinstance(v, (int, float)) else '--'
+
+    def diff(m, t):
+        if not isinstance(m, (int, float)) or t is None:
+            return '--'
+        d = int(m) - t
+        return '一致' if d == 0 else f"{d:+,}"
+
+    mismatch = []
+    for store, code in CODES[region].items():
+        rec = reports.get((target, code))
+        if rec is None:
+            print(pad(store, 12) + pad('未收到', 10, '>'))
+            continue
+        m_day, m_mon = read_traffic(rec['xlsx'])
+        t_day, t_mon = (tr_data.get(store) or [None, None, None])[:2]
+        print(pad(store, 12) + pad(fmt(m_day), 10, '>') + pad(fmt_t(t_day), 10, '>')
+              + pad(diff(m_day, t_day), 10, '>') + pad(fmt(m_mon), 12, '>')
+              + pad(fmt_t(t_mon), 12, '>') + pad(diff(m_mon, t_mon), 10, '>'))
+        if not isinstance(m_day, (int, float)) or (
+                t_day is not None and int(m_day) != t_day):
+            mismatch.append(store)
+
+    if mismatch:
+        print(f"\n  ⚠️  昨日來客數與工具不符／未填：{'、'.join(mismatch)}")
+        print("      無計數器門市（人流用成交筆數×0.85÷0.3 估算）小差屬正常；"
+              "有計數器的店有差就是日報填錯。")
+    else:
+        print("\n  ✅ 昨日來客數全數相符")
 
 
 if __name__ == '__main__':

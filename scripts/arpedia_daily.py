@@ -17,6 +17,10 @@ SHOP_CODES = {'士林': '4', '微風': '5', '美麗華': '24', '阿波羅': '46'
 SHOP_IN    = "'004','005','024','046','054','057'"
 SHOP_STR   = {'士林':'004','微風':'005','美麗華':'024','阿波羅':'046','高島屋':'054','羅東':'057'}
 
+class EPBError(RuntimeError):
+    """EPB 查詢失敗（連線／權限／SQL 錯誤），與「合法查到零筆」區分開。"""
+
+
 def epb(sql):
     r = subprocess.run(
         [JAVA, "-Dsun.net.client.defaultReadTimeout=120000",
@@ -24,8 +28,12 @@ def epb(sql):
         capture_output=True, text=True, cwd=CWD
     )
     lines = [l for l in r.stdout.strip().split('\n') if l.strip()]
-    if not lines:
-        return []
+    # 查到零筆時仍會印出表頭，所以「完全沒有輸出」一定是查詢本身失敗，
+    # 不可當成 0 —— 否則年累積之類的數字會靜靜變成 0 而看不出異常。
+    if r.returncode != 0 or not lines:
+        err = (r.stderr or '').strip().splitlines()
+        raise EPBError(f"EPB 查詢失敗 (rc={r.returncode})："
+                       f"{err[0] if err else '無錯誤訊息（EPB 可能未連線／未開 VPN）'}")
     hdrs = [h.strip().upper() for h in lines[0].split('\t')]
     return [dict(zip(hdrs, row.split('\t'))) for row in lines[1:]]
 
@@ -135,7 +143,8 @@ def main():
 
     # 上月同期（1日 ～ 上月的同一天）
     last_month_start = (month_start - timedelta(days=1)).replace(day=1)
-    last_month_same  = last_month_start.replace(day=yesterday.day)
+    last_month_same  = last_month_start.replace(day=min(yesterday.day,
+                       (month_start - timedelta(days=1)).day))
 
     ar_periods = [
         (f"昨日 {yesterday.strftime('%-m/%-d')}",                                          yesterday,   yesterday),
@@ -156,25 +165,31 @@ def main():
     # ── ARpedia 銷售 ──
     print("\n【ARpedia 銷售數量】")
     ar_results = []
-    for label, ds, de in ar_periods:
-        print(f"  查詢 {label}...", flush=True)
-        ar_results.append((label, query_units(ds, de)))
+    try:
+        for label, ds, de in ar_periods:
+            print(f"  查詢 {label}...", flush=True)
+            ar_results.append((label, query_units(ds, de)))
+    except EPBError as e:
+        print(f"\n  ⚠️  {e}")
+        print("  ⚠️  ARpedia 銷售數量無法取得，本段跳過（不列出數字，以免 0 被誤讀為實際銷售）")
+        ar_results = []
 
-    col_w = 12
-    header = f"{'門市':<6}" + "".join(f"{label:>{col_w}}" for label, _ in ar_results)
-    print("\n" + header)
-    print("-" * len(header))
-    ar_totals = [0] * len(ar_results)
-    for store in STORES:
-        sid = SHOP_CODES[store]
-        row = f"{store:<6}"
-        for i, (_, data) in enumerate(ar_results):
-            v = data.get(sid, 0)
-            ar_totals[i] += v
-            row += f"{v:>{col_w},}"
-        print(row)
-    print("-" * len(header))
-    print(f"{'合計':<6}" + "".join(f"{t:>{col_w},}" for t in ar_totals))
+    if ar_results:
+        col_w = 12
+        header = f"{'門市':<6}" + "".join(f"{label:>{col_w}}" for label, _ in ar_results)
+        print("\n" + header)
+        print("-" * len(header))
+        ar_totals = [0] * len(ar_results)
+        for store in STORES:
+            sid = SHOP_CODES[store]
+            row = f"{store:<6}"
+            for i, (_, data) in enumerate(ar_results):
+                v = data.get(sid, 0)
+                ar_totals[i] += v
+                row += f"{v:>{col_w},}"
+            print(row)
+        print("-" * len(header))
+        print(f"{'合計':<6}" + "".join(f"{t:>{col_w},}" for t in ar_totals))
 
     # ── 人流 ──
     print("\n【人流（來客數）】")
@@ -184,8 +199,11 @@ def main():
     roto_vals = []
     for label, ds, de in tr_periods:
         print(f"  查詢羅東成交筆數 {label}...", flush=True)
-        txn = query_txn_count(ds, de, '057')
-        roto_vals.append(traffic_formula(txn))
+        try:
+            roto_vals.append(traffic_formula(query_txn_count(ds, de, '057')))
+        except EPBError as e:
+            print(f"  ⚠️  {e}")
+            roto_vals.append(None)
     tr_data['羅東'] = roto_vals
 
     tr_labels = [label for label, _, _ in tr_periods]
@@ -211,9 +229,11 @@ def main():
     # ── 門市日報 本日銷售/休假人數（北一＋北二，來自各店日報信附件）──
     try:
         sys.path.insert(0, str(Path(__file__).parent))
-        from daily_headcount import print_headcount
+        from daily_headcount import print_headcount, print_traffic_compare
         print("=" * 80)
-        print_headcount('北一區')
+        reports, target = print_headcount('北一區')
+        print()
+        print_traffic_compare(reports, target, yesterday, tr_data, '北一區')
         print()
     except Exception as e:
         print(f"\n  ⚠️  門市人數統計失敗：{e}")
