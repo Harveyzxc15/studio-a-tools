@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-北區 iPhone 18 手機殼 — 查 EPB 推到 sa-case-hub
+北區 iPhone 18 手機殼 — 查 EPB 推到北區工作台 /case（原 sa-case-hub，2026-10-03 併入 sa-north-hub）
 ==============================================
 EPB 只走公司 VPN，雲端打不到：本機查完庫存、日銷、在途後 POST 上去。
 launchd 每天 11:00、22:00 跑；VPN 沒連就記 log 跳過。
@@ -12,7 +12,7 @@ launchd 每天 11:00、22:00 跑；VPN 沒連就記 log 跳過。
     python3 手機殼_推送.py --seed-xlsx 檔案.xlsx --dry-run   # 印出配貨單的掛勾比對（不查 EPB）
     python3 手機殼_推送.py --seed-xlsx 檔案.xlsx   # 把配貨單推上去
     python3 手機殼_推送.py --poll                  # 網站有人按「立即更新」才查（launchd 每分鐘跑）
-    HUB_URL=http://127.0.0.1:5060 python3 手機殼_推送.py      # 推本機測試站
+    HUB_URL=http://127.0.0.1:5050/case python3 手機殼_推送.py      # 推本機測試站
 
 【Token】環境變數 CASE_PUSH_TOKEN，或 ~/.config/studioa/case_push_token
 ==============================================
@@ -29,13 +29,13 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 
-HUB_REPO = os.path.expanduser('~/sa_case_hub')
+HUB_REPO = os.path.expanduser('~/sa_north_hub/case_hub')
 sys.path.insert(0, HUB_REPO)
 import case_styles as cs  # noqa: E402
 import db  # noqa: E402
 from stores import STORE_CODES, STORE_NAME  # noqa: E402
 
-HUB_URL = os.environ.get('HUB_URL', 'https://sa-case-hub.fly.dev').rstrip('/')
+HUB_URL = os.environ.get('HUB_URL', 'https://sa-north-hub.fly.dev/case').rstrip('/')
 TOKEN_FILE = os.path.expanduser('~/.config/studioa/case_push_token')
 JAVA = '/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/bin/java'
 CP = ':'.join([os.path.expanduser('~/工具中心/lib'), '/Library/EPBrowser/EPB/Shell/shell.jar',
