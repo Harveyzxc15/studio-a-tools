@@ -5,6 +5,8 @@ iPhone 配件組合 — 本機查 EPB，每日各店組數推到 sa-north-hub（
   組數＝poslinev_bi 北區 org 01、stk_id 99200201「促銷組合」列的 stk_qty，依 PBCAM_DOC_ID 分組合
         trans_type A/E/G/J（訂金單也有組合列；不含 H 免得訂金＋尾款重複算）
   iPhone＝cat4 4004、trans_type A/E/H 的 stk_qty
+  保固好禮＝iPhone＋AppleCare+ 選的好禮（POSCAM6N，⚠️代碼跟加購組合 POSCAM2N 重複，要連 pbcam_code 一起比）
+        人次＝AppleCare+ 列（cat4 4969）的 stk_qty，A/E/H；18 與 17 同內容併同一欄
   範圍＝檔期起（START）～今天，依日×店存，期間加總在頁面做
 
 用法：python3 組合套餐_推雲端.py            # 直接推
@@ -13,7 +15,7 @@ iPhone 配件組合 — 本機查 EPB，每日各店組數推到 sa-north-hub（
       HUB_URL=http://127.0.0.1:5050 python3 組合套餐_推雲端.py
 備援機（筆電 launchd 設 SYNC_STANDBY=1）：請求掛滿 3 分鐘、mini 都沒推才接手
 Token：EPB_PUSH_TOKEN 或 ~/.config/studioa/epb_push_token（與 EPB 實績推送共用）
-換檔期：改 START 與 COMBOS（活動代碼查 pos_mc_mas app_code='POSCAM2N'）
+換檔期：改 START、COMBOS（pos_mc_mas app_code='POSCAM2N'）與 GIFTS（app_code='POSCAM6N' 的 iPhone+Care）
 """
 import csv, io, json, os, ssl, subprocess, sys, urllib.request
 from datetime import date, datetime
@@ -32,6 +34,14 @@ COMBOS = [  # POSCAM2N 活動代碼、頁面欄名、加購價
     {'id': '099260914006', 'label': 'B 升級 Simmpo', 'price': 1980},
     {'id': '099260914002', 'label': 'C 殼+鏡頭貼+拭鏡紙', 'price': 1580},
     {'id': '099260914004', 'label': 'D 45W+傳輸線', 'price': 1280},
+]
+GIFTS = [  # 欄 id、頁面欄名、POSCAM6N 活動代碼（18 版、17 版）
+    {'id': 'case_film', 'label': '殼+保貼+三合一座', 'codes': ['099260914004', '099260911050']},
+    {'id': 'lens_film', 'label': '鏡頭貼+保貼+三合一座', 'codes': ['099260914002', '099260911048']},
+    {'id': 'case_lens', 'label': '殼+鏡頭貼+三合一座', 'codes': ['099260914003', '099260911049']},
+    {'id': 'charger_film', 'label': '45W+傳輸線+保貼', 'codes': ['099260914001', '099260911047']},
+    {'id': 'charger_earphone', 'label': '45W+保貼+耳機', 'codes': ['099260914018']},
+    {'id': 'e_3in1', 'label': '17e 23W 三合一', 'codes': ['099260911046']},
 ]
 DAILY_AFTER = '08:30'                              # 每天這個時間後第一次輪詢自動推
 
@@ -105,8 +115,18 @@ def fetch(today):
               for r in run_sql(f"SELECT TO_CHAR(l.doc_date,'YYYY-MM-DD') d, l.shop_id, SUM(l.stk_qty) q {base}"
                                f" AND l.cat4_id='4004' AND l.trans_type IN ('A','E','H')"
                                f" GROUP BY TO_CHAR(l.doc_date,'YYYY-MM-DD'), l.shop_id")]
+    col = {code: g['id'] for g in GIFTS for code in g['codes']}
+    gift_sets = {}
+    for r in run_sql(f"SELECT TO_CHAR(l.doc_date,'YYYY-MM-DD') d, l.shop_id, l.pbcam_doc_id, SUM(l.stk_qty) q {base}"
+                     f" AND l.cat4_id='4969' AND l.pbcam_code='POSCAM6N' AND l.pbcam_doc_id IN {in_list(col)}"
+                     f" AND l.trans_type IN ('A','E','H')"
+                     f" GROUP BY TO_CHAR(l.doc_date,'YYYY-MM-DD'), l.shop_id, l.pbcam_doc_id"):
+        key = (r['D'], r['SHOP_ID'].zfill(3), col[r['PBCAM_DOC_ID']])
+        gift_sets[key] = gift_sets.get(key, 0) + int(float(r['Q']))
     return {'start': START, 'end': str(today), 'combos': COMBOS,
-            'sets': [s for s in sets if s[3]], 'iphone': [i for i in iphone if i[2]]}
+            'sets': [s for s in sets if s[3]], 'iphone': [i for i in iphone if i[2]],
+            'gifts': [{'id': g['id'], 'label': g['label']} for g in GIFTS],
+            'gift_sets': [[*k, q] for k, q in sorted(gift_sets.items()) if q]}
 
 
 def main():
@@ -120,7 +140,8 @@ def main():
     if '--dry-run' in sys.argv:
         print(json.dumps({k: v if k in ('start', 'end') else len(v) for k, v in body.items()}, ensure_ascii=False))
         return
-    print(call('/api/combo/snapshot', body), f"（{sum(s[3] for s in body['sets'])} 組）")
+    print(call('/api/combo/snapshot', body),
+          f"（加購 {sum(s[3] for s in body['sets'])} 組，保固好禮 {sum(s[3] for s in body['gift_sets'])} 人次）")
 
 
 if __name__ == '__main__':
