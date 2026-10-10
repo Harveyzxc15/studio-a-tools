@@ -11,6 +11,7 @@
       python3 庫存追蹤_推雲端.py --poll     # 雲端有人按「刷新」或加品項才推（launchd 每 2 分鐘跑）
       python3 庫存追蹤_推雲端.py --dry-run  # 只查不推，印出結果
       HUB_URL=http://127.0.0.1:5050 python3 庫存追蹤_推雲端.py      # 推本機測試站
+備援機（筆電 launchd 設 SYNC_STANDBY=1）：刷新請求掛滿 3 分鐘、mini 都沒推才接手
 Token：EPB_PUSH_TOKEN 或 ~/.config/studioa/epb_push_token（與 EPB 實績推送共用）
 """
 import csv, io, json, os, ssl, subprocess, sys, urllib.request
@@ -43,6 +44,26 @@ def call(path, body=None):
         context = None
     with urllib.request.urlopen(req, timeout=60, context=context) as r:
         return json.loads(r.read())
+
+
+STANDBY_STATE = os.path.expanduser('~/.config/studioa/stock_watch_standby_seen.json')
+
+
+def standby_ready(pending):
+    """同 PQI兌換_推雲端.py：備援機等請求掛滿 3 分鐘才做；主機（沒設 SYNC_STANDBY）一律直接做。"""
+    if os.environ.get('SYNC_STANDBY') != '1':
+        return pending
+    if not pending:                     # 沒在等了（主機推完）就忘掉，下次重新起算
+        if os.path.exists(STANDBY_STATE):
+            os.remove(STANDBY_STATE)
+        return pending
+    import time
+    try:
+        first = json.load(open(STANDBY_STATE))['first']
+    except (OSError, ValueError, KeyError):
+        first = time.time()
+        json.dump({'first': first}, open(STANDBY_STATE, 'w'))
+    return time.time() - first >= 3 * 60
 
 
 def run_sql(sql, max_rows=50000):
@@ -94,7 +115,7 @@ def fetch(codes, today):
 
 def main():
     pending = call('/api/stock-watch/pending')
-    if '--poll' in sys.argv and not pending.get('pending'):
+    if '--poll' in sys.argv and not standby_ready(pending.get('pending')):
         return
     codes = pending.get('codes') or []
     body = fetch(codes, date.today()) if codes else {'range': None, 'codes': {}, 'missing': []}
