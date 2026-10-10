@@ -1,23 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>EnvironmentVariables</key>
-	<dict>
-		<key>SSL_CERT_FILE</key>
-		<string>/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/certifi/cacert.pem</string>
-	</dict>
-	<key>Label</key>
-	<string>com.studioa.stock-watch</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/usr/bin/python3</string>
-		<string>/Users/h/工具中心/scripts/庫存追蹤/庫存追蹤_推雲端.py</string>
-		<string>--poll</string>
-	</array>
-	<key>StandardErrorPath</key>
-	<string>/tmp/stock-watch.err</string>
-	<key>StartInterval</key>
-	<integer>120</integer>
-</dict>
-</plist>
+<plist version="1.0"><dict>
+<key>Label</key><string>com.studioa.stock-watch</string>
+<key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>/Users/h/工具中心/scripts/庫存追蹤/庫存追蹤_推雲端.py</string><string>--poll</string></array>
+<key>EnvironmentVariables</key><dict><key>SSL_CERT_FILE</key><string>/Users/h/Library/Python/3.9/lib/python/site-packages/certifi/cacert.pem</string><key>LAUNCHD</key><string>1</string><key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string></dict>
+<key>StartInterval</key><integer>120</integer>
+<key>StandardOutPath</key><string>/Users/h/工具中心/輸出/雲端推送/stock-watch.log</string>
+<key>StandardErrorPath</key><string>/Users/h/工具中心/輸出/雲端推送/stock-watch.log</string>
+</dict></plist>
