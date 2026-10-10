@@ -13,6 +13,7 @@
 
 用法：
   python3 warranty_report_all.py            # 自動：最近完整週（週日～週六）
+  python3 warranty_report_all.py --this-week  # 本週：昨日所在週的週日～昨日
   python3 warranty_report_all.py 5/31 6/4   # 指定起迄日（同年）
   python3 warranty_report_all.py 2026-05-31 2026-06-04
 """
@@ -598,7 +599,10 @@ def render_progress(done, total, label=''):
 # ── 主程式 ────────────────────────────────────────────────────────────────────
 def main():
     t0 = time.time()
-    if len(sys.argv) >= 3:
+    if len(sys.argv) == 2 and sys.argv[1] == '--this-week':
+        d_end   = date.today() - timedelta(days=1)
+        d_start = d_end - timedelta(days=(d_end.weekday() + 1) % 7)
+    elif len(sys.argv) >= 3:
         d_start, d_end = parse_date(sys.argv[1]), parse_date(sys.argv[2])
     elif len(sys.argv) == 2:
         d_end   = parse_date(sys.argv[1])
