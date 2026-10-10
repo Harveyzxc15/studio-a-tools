@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>SSL_CERT_FILE</key>
+		<string>/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/certifi/cacert.pem</string>
+	</dict>
+	<key>Label</key>
+	<string>com.studioa.combo</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/h/工具中心/scripts/組合套餐/組合套餐_推雲端.py</string>
+		<string>--poll</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/tmp/combo.err</string>
+	<key>StartInterval</key>
+	<integer>120</integer>
+</dict>
+</plist>
