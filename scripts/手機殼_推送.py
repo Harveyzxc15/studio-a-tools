@@ -42,7 +42,14 @@ CP = ':'.join([os.path.expanduser('~/工具中心/lib'), '/Library/EPBrowser/EPB
                '/Library/EPBrowser/EPB/Shell/lib/*'])
 EPB_ROOT = '/Library/EPBrowser'
 SALES_FLOOR = date(2026, 9, 1)          # 日銷最早只推到這天，之前沒有 18 殼
-CASE_CAT6 = "('6053','6054','6055','6056')"
+CASE_CAT6_IDS = ('6053', '6054', '6055', '6056')          # 殼的中類；保貼 6079、鏡頭貼 6081 不是殼
+CASE_CAT6 = '(' + ','.join(f"'{c}'" for c in CASE_CAT6_IDS) + ')'
+ACC_TYPE = {'6079': '保貼', '6081': '鏡頭貼'}                # 銷售分析用（2026-10-06）
+DEVICE_CAT5 = {'5614': 'Pro', '5615': 'Pro Max'}          # iPhone 18 Pro / Pro Max 主機，搭售率分母
+NORTH_SALE = "l.org_id='01' AND l.trans_type IN ('A','E','H')"
+# 成本只算有收錢的行：0 元贈送的成本不能算進純銷售毛利（10/6 修：原本把贈品成本扣在純銷售上，pqi 保貼毛利少算約 4 萬）
+COST_SUM = ('SUM(CASE WHEN l.line_total_net<>0'
+            ' THEN l.stk_qty*NVL(NULLIF(l.trn_cost_price,0),l.cost_price) ELSE 0 END)')   # 交易成本優先，沒有才用主檔成本
 
 
 def token():
@@ -95,19 +102,23 @@ def http(path, payload=None):
         sys.exit(f'❌ 連不到 {HUB_URL}：{error.reason}')
 
 
-def fetch(today, gift_ids, settings_days=10):
+def fetch(today, gift_ids, settings_days=10, sales_from=None):
     locs = in_list(STORE_CODES)
     stores = in_list('SA' + c for c in STORE_CODES)
-    case_filter = f"m.cat5_id IN ('5609','5610') AND m.cat1_id IN ('1001','1002') AND m.cat6_id IN {CASE_CAT6}"
+    # Duo（5611）目前只收展示品，一般殼不推，免得進到補貨與銷售分析（2026-10-16）
+    case_filter = (f"(m.cat5_id IN ('5609','5610') AND m.cat1_id IN ('1001','1002')"
+                   f" OR m.cat5_id='5611' AND m.cat1_id='1002') AND m.cat6_id IN {CASE_CAT6}")
     gift_filter = f' OR m.stk_id IN {in_list(gift_ids)}' if gift_ids else ''
 
-    sku_rows = epb(f"SELECT m.stk_id, m.name, m.cat5_id, m.cat1_id, m.brand_id FROM stkmas m WHERE ({case_filter}{gift_filter})")
+    sku_rows = epb(f"SELECT m.stk_id, m.name, m.cat5_id, m.cat1_id, m.cat6_id, m.brand_id"
+                   f" FROM stkmas m WHERE ({case_filter}{gift_filter})")
     skus, gifts = [], []
     for r in sku_rows:
         if r['STK_ID'] in gift_ids:
             gifts.append({'stk_id': r['STK_ID'], 'name': r['NAME'].lstrip('@')})
         model = cs.CAT5_MODEL.get(r['CAT5_ID'])
-        if model and r['CAT1_ID'] in ('1001', '1002'):
+        # cat6 也要是殼：贈品是用 gift_filter 另外撈的，沒這個判斷保貼、鏡頭貼會被當成款式再加一次
+        if model and r['CAT1_ID'] in ('1001', '1002') and r['CAT6_ID'] in CASE_CAT6_IDS:
             # 廠商名 EPB 主檔沒有（只有品牌代碼），留空白讓雲端保留配貨單帶進來的廠商名
             skus.append({'stk_id': r['STK_ID'], 'name': r['NAME'].lstrip('@'), 'vendor': '',
                          'model': model, 'kind': 'demo' if r['CAT1_ID'] == '1002' else 'normal'})
@@ -120,11 +131,12 @@ def fetch(today, gift_ids, settings_days=10):
                           f" WHERE s.stk_id=m.stk_id AND s.store_id IN {stores} AND ({case_filter}{gift_filter})"
                           f" GROUP BY s.store_id, s.stk_id HAVING SUM(s.stk_qty)<>0")]
 
-    sales_from = max(SALES_FLOOR, today - timedelta(days=35))
+    sales_from = max(SALES_FLOOR, sales_from or today - timedelta(days=35))
     sales = [{'sale_date': r['D'], 'store_id': r['SHOP_ID'].zfill(3), 'stk_id': r['STK_ID'],
-              'qty': float(r['Q']), 'gift_qty': float(r['G'])}
+              'qty': float(r['Q']), 'gift_qty': float(r['G']), 'amt': float(r['AMT'] or 0), 'cost': float(r['COST'] or 0)}
              for r in epb(f"SELECT TO_CHAR(l.doc_date,'YYYY-MM-DD') d, l.shop_id, l.stk_id, SUM(l.stk_qty) q,"
-                          f" SUM(CASE WHEN l.trans_type='A' AND l.line_total_net=0 THEN l.stk_qty ELSE 0 END) g"
+                          f" SUM(CASE WHEN l.trans_type='A' AND l.line_total_net=0 THEN l.stk_qty ELSE 0 END) g,"
+                          f" SUM(l.line_total_net+l.line_tax) amt, {COST_SUM} cost"
                           f" FROM poslinev_bi l, stkmas m WHERE l.stk_id=m.stk_id AND l.org_id='01'"
                           f" AND l.shop_id IN {locs} AND l.trans_type IN ('A','E','H')"
                           f" AND l.doc_date>=TO_DATE('{sales_from}','YYYY-MM-DD') AND ({case_filter}{gift_filter})"
@@ -150,6 +162,58 @@ def fetch(today, gift_ids, settings_days=10):
     return skus, gifts, stock, sales, transit, sales_from
 
 
+def fetch_analysis(sales_from):
+    """銷售分析頁要的：保貼／鏡頭貼日銷、iPhone 18 Pro/PM 台數、同一張單一起買的單數。"""
+    locs = in_list(STORE_CODES)
+    acc_filter = f"m.cat5_id IN ('5609','5610') AND m.cat1_id='1001' AND m.cat6_id IN {in_list(ACC_TYPE)}"
+    period = f"{NORTH_SALE} AND l.shop_id IN {locs} AND l.doc_date>=TO_DATE('{sales_from}','YYYY-MM-DD')"
+    acc_rows = epb(f"SELECT TO_CHAR(l.doc_date,'YYYY-MM-DD') d, l.shop_id, l.stk_id, MAX(m.name) nm,"
+                   f" MAX(m.cat5_id) c5, MAX(m.cat6_id) c6, SUM(l.stk_qty) q,"
+                   f" SUM(CASE WHEN l.trans_type='A' AND l.line_total_net=0 THEN l.stk_qty ELSE 0 END) g,"
+                   f" SUM(l.line_total_net+l.line_tax) amt, {COST_SUM} cost"
+                   f" FROM poslinev_bi l, stkmas m WHERE l.stk_id=m.stk_id AND {period} AND {acc_filter}"
+                   f" GROUP BY TO_CHAR(l.doc_date,'YYYY-MM-DD'), l.shop_id, l.stk_id")
+    acc_skus = {r['STK_ID']: {'stk_id': r['STK_ID'], 'name': r['NM'].lstrip('@'), 'model': cs.CAT5_MODEL[r['C5']],
+                              'acc_type': ACC_TYPE[r['C6']]} for r in acc_rows}
+    acc_sales = [{'sale_date': r['D'], 'store_id': r['SHOP_ID'].zfill(3), 'stk_id': r['STK_ID'], 'qty': float(r['Q']),
+                  'gift_qty': float(r['G']), 'amt': float(r['AMT'] or 0), 'cost': float(r['COST'] or 0)}
+                 for r in acc_rows]
+    device = [{'sale_date': r['D'], 'store_id': r['SHOP_ID'].zfill(3), 'model': DEVICE_CAT5[r['C5']], 'qty': float(r['Q'])}
+              for r in epb(f"SELECT TO_CHAR(l.doc_date,'YYYY-MM-DD') d, l.shop_id, m.cat5_id c5, SUM(l.stk_qty) q"
+                           f" FROM poslinev_bi l, stkmas m WHERE l.stk_id=m.stk_id AND {period}"
+                           f" AND m.cat5_id IN {in_list(DEVICE_CAT5)}"
+                           f" GROUP BY TO_CHAR(l.doc_date,'YYYY-MM-DD'), l.shop_id, m.cat5_id")]
+    # 一張單一列：有沒有主機／殼／保貼／鏡頭貼。只看有付錢的銷售行（0 元贈送、退貨不算一起買）
+    case_flag = f"m.cat5_id IN ('5609','5610') AND m.cat1_id='1001' AND m.cat6_id IN {CASE_CAT6}"
+    docs = epb(f"SELECT TO_CHAR(l.doc_date,'YYYY-MM-DD') d, l.shop_id, l.doc_id,"
+               f" MAX(CASE WHEN m.cat5_id IN {in_list(DEVICE_CAT5)} THEN 1 ELSE 0 END) dev,"
+               f" MAX(CASE WHEN {case_flag} THEN 1 ELSE 0 END) cs,"
+               f" MAX(CASE WHEN {acc_filter} AND m.cat6_id='6079' THEN 1 ELSE 0 END) pr,"
+               f" MAX(CASE WHEN {acc_filter} AND m.cat6_id='6081' THEN 1 ELSE 0 END) ln"
+               f" FROM poslinev_bi l, stkmas m WHERE l.stk_id=m.stk_id AND {period}"
+               f" AND l.trans_type IN ('A','H') AND l.stk_qty>0 AND l.line_total_net>0"
+               f" AND (m.cat5_id IN {in_list(DEVICE_CAT5)} OR {case_flag} OR {acc_filter})"
+               f" GROUP BY TO_CHAR(l.doc_date,'YYYY-MM-DD'), l.shop_id, l.doc_id")
+    baskets = {}
+    for r in docs:
+        dev, case, prot, lens = (r[k] == '1' for k in ('DEV', 'CS', 'PR', 'LN'))
+        b = baskets.setdefault((r['D'], r['SHOP_ID'].zfill(3)), dict.fromkeys(
+            ('docs_device', 'device_case', 'device_prot', 'device_lens', 'docs_case', 'case_prot', 'case_lens',
+             'case_prot_lens'), 0))
+        if dev:
+            b['docs_device'] += 1
+            b['device_case'] += case
+            b['device_prot'] += prot
+            b['device_lens'] += lens
+        if case:
+            b['docs_case'] += 1
+            b['case_prot'] += prot
+            b['case_lens'] += lens
+            b['case_prot_lens'] += prot and lens
+    basket = [dict(v, sale_date=d, store_id=s) for (d, s), v in baskets.items()]
+    return list(acc_skus.values()), acc_sales, device, basket
+
+
 def seed_report(path):
     conn = db.connect(':memory:')
     db.init_db(conn)
@@ -170,23 +234,27 @@ def seed_report(path):
     return hooks, alloc, skus
 
 
-def push_epb(stamp, transit_days, dry_run=False):
+def push_epb(stamp, transit_days, dry_run=False, sales_from=None):
     """查 EPB 並推上去。回傳 (成功與否, 說明)，給排程與「立即更新」共用。"""
     gift_ids = [] if dry_run and not os.path.exists(TOKEN_FILE) and not os.environ.get('CASE_PUSH_TOKEN') \
         else http('/api/gift-skus').get('stk_ids', [])
     try:
-        skus, gifts, stock, sales, transit, sales_from = fetch(stamp.date(), gift_ids, transit_days)
+        skus, gifts, stock, sales, transit, sales_from = fetch(stamp.date(), gift_ids, transit_days, sales_from)
+        acc_skus, acc_sales, device, basket = fetch_analysis(sales_from)
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         message = f'EPB 查不到（VPN 有連嗎？）：{str(error)[:150]}'
         print(f'⚠️ 跳過這次推送：{message}')
         return False, message
     summary = (f'SKU {len(skus)}（demo {sum(1 for s in skus if s["kind"] == "demo")}）、庫存 {len(stock)} 筆、'
-               f'日銷 {len(sales)} 筆（{sales_from} 起）、在途 {len(transit)} 筆、贈品 {len(gifts)}')
+               f'日銷 {len(sales)} 筆（{sales_from} 起）、在途 {len(transit)} 筆、贈品 {len(gifts)}、'
+               f'保貼鏡頭貼 {len(acc_sales)} 筆、主機 {len(device)} 筆、單據 {len(basket)} 筆')
     print(summary)
     if not dry_run:
         print(http('/api/push', {'snap_at': f'{stamp:%Y-%m-%d %H:%M:%S}', 'sales_from': sales_from.isoformat(),
                                  'skus': skus, 'gifts': gifts, 'stock': stock, 'sales_day': sales,
-                                 'in_transit': transit, 'pushed_by': os.environ.get('USER', '')}))
+                                 'in_transit': transit, 'acc_skus': acc_skus, 'acc_sales_day': acc_sales,
+                                 'device_sales_day': device, 'basket_day': basket,
+                                 'pushed_by': os.environ.get('USER', '')}))
     return True, summary
 
 
@@ -196,10 +264,23 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--poll', action='store_true', help='看網站有沒有人按「立即更新」，有才查 EPB')
     parser.add_argument('--transit-days', type=int, default=10)
+    parser.add_argument('--sales-from', type=date.fromisoformat,
+                        help='日銷從這天起重推（預設近 35 天）；回補金額成本用 --sales-from 2026-09-01')
     args = parser.parse_args()
     stamp = datetime.now(cs.TZ)
 
     if args.poll:
+        try:
+            pending = http('/api/sync-request?peek=1').get('pending')
+        except SystemExit:              # 筆電睡醒還沒網路：每分鐘都會遇到，安靜跳過，不要每分鐘寫一行錯誤
+            return
+        if not pending:
+            return                      # 每分鐘跑一次，沒人按就安靜結束，不要洗 log
+        # 筆電和 Mac mini 都在跑：先確認這台連得到 EPB 才領，沒連 VPN 的那台不要把工作領走又失敗
+        try:
+            epb('SELECT 1 AS OK FROM DUAL')
+        except Exception:
+            return
         request_id = http('/api/sync-request').get('id')
         if not request_id:
             return                      # 每分鐘跑一次，沒人按就安靜結束，不要洗 log
@@ -219,7 +300,7 @@ def main():
                                            'filename': os.path.basename(args.seed_xlsx),
                                            'pushed_by': os.environ.get('USER', '')}))
         return
-    push_epb(stamp, args.transit_days, args.dry_run)
+    push_epb(stamp, args.transit_days, args.dry_run, args.sales_from)
 
 
 if __name__ == '__main__':
