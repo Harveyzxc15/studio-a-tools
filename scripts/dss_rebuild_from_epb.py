@@ -37,7 +37,7 @@ HOST_CAT4 = {"4001": "CPU", "4002": "CPU", "4004": "iPhone",
              "4005": "iPad", "4006": "iPad", "4041": "iPad",
              "4038": "Watch", "4014": "Airpods"}
 HOST_CAT3 = {"3001", "3002", "3033", "3035"}   # 主機 / APL週邊(AirPods) / 認證機 / 福利機
-AIRPODS_CAT5 = {"5087", "5463"}                # 排除 5035 EarPods 有線耳機
+AIRPODS_CAT5 = {"5087", "5463", "5599"}        # 排除 5035 EarPods 有線耳機；5599=AirPods 第5代（2026-10 新增）
 ACC_CAT3 = "3003"                              # 3PP 週邊配件
 TRANS_TYPES = ("A", "E", "H")
 EXCLUDE_OCCUPATION = ("88", "99")              # 企業公司戶 / 通訊業
