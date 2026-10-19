@@ -27,10 +27,12 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import FormulaRule
+import os
 # ── 連線/路徑設定（硬編碼，與 保固搭售率/warranty_report.py 一致）──
 JAVA        = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/bin/java"
-EPB_CP      = "/Users/bob.1469/Desktop/north1-weekly-report:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*"
-EPB_CWD     = "/Users/bob.1469/Desktop/north1-weekly-report"
+EPB_CP      = os.path.expanduser("~/Desktop/north1-weekly-report:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*")
+EPB_CWD     = os.path.expanduser("~/Desktop/north1-weekly-report")
 MAIL_BASE   = Path("~/Library/Mail/V10").expanduser()
 OUTPUT_BASE = Path("~/工具中心/輸出/每日追蹤主機").expanduser()
 
@@ -62,10 +64,10 @@ REGIONS = {
 # (key, 顯示名, header色, sub色, 目標%)
 CATS = [
     ('mac',     'Mac',     '2E75B6', 'BDD7EE', 60),
-    ('iphone',  'iPhone',  'C55A11', 'FCE4D6', 30),
-    ('ipad',    'iPad',    '375623', 'E2EFDA', 50),
-    ('watch',   'Watch',   'A50021', 'FFCCCC', 40),
-    ('airpods', 'AirPods', '7030A0', 'E2CFEE', 35),
+    ('iphone',  'iPhone',  'C55A11', 'FCE4D6', 20),
+    ('ipad',    'iPad',    '375623', 'E2EFDA', 45),
+    ('watch',   'Watch',   'A50021', 'FFCCCC', 30),
+    ('airpods', 'AirPods', '7030A0', 'E2CFEE', 30),
 ]
 EDU_CATS = [
     ('mac',   'Mac',   '2E75B6', 'BDD7EE'),
@@ -286,30 +288,79 @@ def _save_cache(cache):
     except Exception:
         pass
 
+MYSETUP_SENDER = 'guestbook_support@group.apple.com'
+
+def _mysetup_mail_paths(lo_date):
+    """回傳 Personal Setup 信的 emlx 路徑（依收信時間排序）。
+    不能用 emlx 檔案 mtime 篩：Mail 重新同步會把舊信 mtime 改成同步當下（2026-10-19 實測）。
+    優先查 Mail 的 Envelope Index（收信時間 date_received、寄件者），ROWID 即 emlx 檔名；
+    查不到時退回掃全部 emlx（只用 mtime 下限，同步只會讓 mtime 變新）。"""
+    all_files = glob.glob(os.path.join(str(MAIL_BASE), '**/Messages/*.emlx'), recursive=True)
+    by_id = {}
+    for f in all_files:
+        rid = os.path.basename(f).split('.')[0]
+        if rid not in by_id or not f.endswith('.partial.emlx'):   # 完整檔優先於 .partial
+            by_id[rid] = f
+    lo_ts = _dt(lo_date.year, lo_date.month, lo_date.day).timestamp() - 86400
+    idx = MAIL_BASE / 'MailData' / 'Envelope Index'
+    if idx.exists():
+        import sqlite3, tempfile, shutil
+        tmp = tempfile.mkdtemp()
+        try:
+            # 複製到暫存檔再開（含 WAL），避免鎖到 Mail 正在用的資料庫
+            for suffix in ('', '-wal', '-shm'):
+                src = str(idx) + suffix
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(tmp, 'ei' + suffix))
+            con = sqlite3.connect(os.path.join(tmp, 'ei'))
+            rows = con.execute(
+                "SELECT m.ROWID FROM messages m JOIN addresses a ON m.sender = a.ROWID "
+                "WHERE a.address = ? AND m.deleted = 0 AND m.date_received >= ? ORDER BY m.date_received",
+                (MYSETUP_SENDER, lo_ts)).fetchall()
+            con.close()
+            return [by_id[str(r[0])] for r in rows if str(r[0]) in by_id]
+        except Exception:
+            pass
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    return [f for f in by_id.values() if os.path.getmtime(f) >= lo_ts]
+
+def _mysetup_xlsx_blobs(msg, path):
+    """信件內的 .xlsx 附件 bytes；.partial.emlx 的附件另存在同層 Attachments/{ROWID}/。"""
+    for part in msg.walk():
+        fn = _decode_mail_str(part.get_filename() or '')
+        if fn.lower().endswith('.xlsx'):
+            raw_xls = part.get_payload(decode=True)
+            if raw_xls:
+                yield raw_xls
+    if path.endswith('.partial.emlx'):
+        rid = os.path.basename(path).split('.')[0]
+        att_dir = os.path.join(os.path.dirname(os.path.dirname(path)), 'Attachments', rid)
+        for f in sorted(glob.glob(os.path.join(att_dir, '**', '*.xlsx'), recursive=True)):
+            with open(f, 'rb') as fh:
+                yield fh.read()
+
 def scan_mysetup(kw_map, lo_date, hi_date):
     """掃 Apple Mail 抓 Personal Setup 提交數，一次涵蓋 lo~hi 的所有 setup 日期。
     回傳 {date_iso: {store: count}}，由 mysetup_sum() 推導各期間（避免重複掃描）。
     純 Python CPU 工作（會佔 GIL），主程式以獨立 process 執行使其與 EPB 查詢併行。
     已定案日期（SETTLE_DAYS 天前）的提交數從本機快取讀取，省下 xlsx 載入。
+    快取一天一筆 {'stores': [...], 'counts': {...}}：只帶單區 kw_map 的呼叫只讀不縮，
+    店名集合不同時合併，不會把兩區合併的資料覆寫成單區。
     """
     cache = _load_cache()
     settle_before = date.today() - timedelta(days=SETTLE_DAYS)
-
-    emlx_files = glob.glob(os.path.join(str(MAIL_BASE), '**/Messages/*.emlx'), recursive=True)
-    emlx_files = [f for f in emlx_files if not f.endswith('.partial.emlx')]
-    lo = _dt(lo_date.year, lo_date.month, lo_date.day).timestamp() - 86400
-    hi = _dt(hi_date.year, hi_date.month, hi_date.day).timestamp() + 86400 * 2
-    emlx_files = [f for f in emlx_files if lo <= os.path.getmtime(f) <= hi]
+    want = set(kw_map)
 
     by_date = {}
     seen_dates = set()
-    for path in emlx_files:
+    for path in _mysetup_mail_paths(lo_date):
         try:
             # 快速預篩：先讀檔頭，原始 bytes 不含關鍵字就跳過（省下對數千封非候選信的 MIME parse）
             # 用寄件者過濾（中文標題會被 MIME 編碼，raw bytes 找不到 'Setup Data'）
             with open(path, 'rb') as f:
                 raw = f.read(32768)
-                if b'guestbook_support@group.apple.com' not in raw:
+                if MYSETUP_SENDER.encode() not in raw:
                     continue
                 raw += f.read()  # 候選信才補讀完整內容（attachment 需要）
             if b'\n' not in raw: continue
@@ -321,18 +372,17 @@ def scan_mysetup(kw_map, lo_date, hi_date):
             data_date = _subject_date(subj)
             if data_date is None or not (lo_date <= data_date <= hi_date): continue
             if data_date in seen_dates: continue
-            seen_dates.add(data_date)
             diso = data_date.isoformat()
-            # 已定案 + 已快取 → 直接用，跳過昂貴的 xlsx 載入
-            if data_date < settle_before and diso in cache:
-                by_date[diso] = cache[diso]
+            # 已定案 + 快取涵蓋所需店名 → 直接用，跳過昂貴的 xlsx 載入
+            ent = cache.get(diso)
+            if (data_date < settle_before and isinstance(ent, dict)
+                    and want <= set(ent.get('stores', []))):
+                seen_dates.add(data_date)
+                by_date[diso] = {k: v for k, v in ent['counts'].items() if k in want}
                 continue
             counts = defaultdict(int)
-            for part in msg.walk():
-                fn = _decode_mail_str(part.get_filename() or '')
-                if not fn.lower().endswith('.xlsx'): continue
-                raw_xls = part.get_payload(decode=True)
-                if not raw_xls: continue
+            found = False
+            for raw_xls in _mysetup_xlsx_blobs(msg, path):
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
                     mwb = load_workbook(io.BytesIO(raw_xls), read_only=True, data_only=True)
@@ -354,15 +404,25 @@ def scan_mysetup(kw_map, lo_date, hi_date):
                                 counts[store] += 1
                                 break
                 mwb.close()
+                found = True
                 break
+            if not found: continue   # 附件還沒下載完 → 換同日期的另一封重寄信
+            seen_dates.add(data_date)
             by_date[diso] = dict(counts)
         except Exception:
             continue
 
     # 回寫快取：只存已定案日期（最近未定案的日期每次重掃，避免漏後到的資料）
     for diso, counts in by_date.items():
-        if date.fromisoformat(diso) < settle_before:
-            cache[diso] = counts
+        if date.fromisoformat(diso) >= settle_before:
+            continue
+        ent = cache.get(diso)
+        old_stores = set(ent.get('stores', [])) if isinstance(ent, dict) and 'counts' in ent else set()
+        if want <= old_stores:
+            continue   # 既有快取已涵蓋（例如兩區合併），不覆寫
+        merged = dict(ent['counts']) if old_stores else {}
+        merged.update(counts)
+        cache[diso] = {'stores': sorted(old_stores | want), 'counts': merged}
     _save_cache(cache)
     return by_date
 
@@ -389,6 +449,24 @@ def sc(ws, r, c, val=None, bg=None, fg='000000', bold=False, sz=10):
     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     cell.border = BORD
     return cell
+
+def rate_formula(H, A):
+    return f'=IF({H}>0,N({A})/{H},"—")'
+
+def gap_formula(H, A, tgt):
+    need = f'CEILING(ROUND({H}*{tgt}/100,6),1)-N({A})'
+    return f'=IF({H}<=0,"—",IF(MAX(0,{need})=0,"達標",MAX(0,{need})))'
+
+def add_rate_cf(ws, r1, r2, col, tgt):
+    """搭售率欄：低於目標紅字（隨數字自動變色）、無資料灰字"""
+    L = get_column_letter(col); c = f'{L}{r1}'
+    ws.conditional_formatting.add(f'{L}{r1}:{L}{r2}', FormulaRule(formula=[f'ISTEXT({c})'], font=Font(color='AAAAAA'), stopIfTrue=True))
+    ws.conditional_formatting.add(f'{L}{r1}:{L}{r2}', FormulaRule(formula=[f'{c}<{tgt}/100'], font=Font(color='C00000')))
+
+def add_gap_cf(ws, r1, r2, col):
+    L = get_column_letter(col+0); c = f'{L}{r1}'
+    ws.conditional_formatting.add(f'{L}{r1}:{L}{r2}', FormulaRule(formula=[f'{c}="—"'], font=Font(color='AAAAAA'), stopIfTrue=True))
+    ws.conditional_formatting.add(f'{L}{r1}:{L}{r2}', FormulaRule(formula=[f'ISNUMBER({c})'], font=Font(color='C00000')))
 
 def write_table(ws, start_row, title, data, cfg, extras=None, mysetup=None):
     stores      = cfg['stores']
@@ -438,24 +516,13 @@ def write_table(ws, start_row, title, data, cfg, extras=None, mysetup=None):
         col = 2
         for cat, label, hbg, sbg, tgt in CATS:
             host, sa_, acpp_ = data[store][cat]
-            w   = sa_ + acpp_
-            pct = w / host * 100 if host > 0 else None
-            ps  = f'{pct:.0f}%' if pct is not None else '—'
-            txt = ('C00000' if pct is not None and pct < tgt else '375623' if pct is not None else 'AAAAAA')
-            # 缺口 = 達標所需搭售數(主機×目標%，無條件進位) − 現有搭售數
-            need = (host * tgt + 99) // 100 if host > 0 else 0
-            gap  = max(0, need - w)
-            if host <= 0:
-                gtxt, gfg = '—', 'AAAAAA'
-            elif gap == 0:
-                gtxt, gfg = '達標', '375623'
-            else:
-                gtxt, gfg = gap, 'C00000'
+            # 搭售率＝ACPP+/台數（排除 SACare）；缺口＝⌈台數×目標%⌉−ACPP+，皆為 Excel 公式
             sc(ws, r, col,     host if host > 0 else 0,     bg=bg)
             sc(ws, r, col + 1, acpp_ if acpp_ != 0 else '', bg=bg)
             sc(ws, r, col + 2, sa_   if sa_   != 0 else '', bg=bg)
-            sc(ws, r, col + 3, ps, bg=bg, fg=txt, bold=True)
-            sc(ws, r, col + 4, gtxt, bg=bg, fg=gfg, bold=True)
+            H_, A_ = f'{get_column_letter(col)}{r}', f'{get_column_letter(col+1)}{r}'
+            sc(ws, r, col + 3, rate_formula(H_, A_), bg=bg, fg='375623', bold=True).number_format = '0%'
+            sc(ws, r, col + 4, gap_formula(H_, A_, tgt), bg=bg, fg='375623', bold=True)
             col += 5
         if extras:
             sc(ws, r, col,     extras[store]['arpedia'] or '', bg=bg)
@@ -478,19 +545,15 @@ def write_table(ws, start_row, title, data, cfg, extras=None, mysetup=None):
     sc(ws, r_tot, 1, '合計', bg='404040', fg='FFFFFF', bold=True)
     col = 2
     for cat, label, hbg, sbg, tgt in CATS:
-        t_h = sum(data[s][cat][0] for s in stores)
-        t_w = sum(data[s][cat][1] + data[s][cat][2] for s in stores)
-        pct = t_w / t_h * 100 if t_h > 0 else None
-        ps  = f'{pct:.0f}%' if pct is not None else '—'
-        txt = ('C00000' if pct is not None and pct < tgt else '375623' if pct is not None else 'AAAAAA')
-        t_need = (t_h * tgt + 99) // 100 if t_h > 0 else 0
-        t_gap  = max(0, t_need - t_w)
-        gtxt, gfg = ('—', 'AAAAAA') if t_h <= 0 else (('達標', '375623') if t_gap == 0 else (t_gap, 'C00000'))
-        sc(ws, r_tot, col,     t_h, bg='D9D9D9', bold=True)
-        sc(ws, r_tot, col + 1, sum(data[s][cat][2] for s in stores) or '', bg='D9D9D9', bold=True)
-        sc(ws, r_tot, col + 2, sum(data[s][cat][1] for s in stores), bg='D9D9D9', bold=True)
-        sc(ws, r_tot, col + 3, ps, fg=txt, bg='D9D9D9', bold=True)
-        sc(ws, r_tot, col + 4, gtxt, fg=gfg, bg='D9D9D9', bold=True)
+        r1, r2 = start_row + 3, r_tot - 1
+        for k in range(3):
+            Lk = get_column_letter(col + k)
+            sc(ws, r_tot, col + k, f'=SUM({Lk}{r1}:{Lk}{r2})', bg='D9D9D9', bold=True)
+        H_, A_ = f'{get_column_letter(col)}{r_tot}', f'{get_column_letter(col+1)}{r_tot}'
+        sc(ws, r_tot, col + 3, rate_formula(H_, A_), fg='375623', bg='D9D9D9', bold=True).number_format = '0%'
+        sc(ws, r_tot, col + 4, gap_formula(H_, A_, tgt), fg='375623', bg='D9D9D9', bold=True)
+        add_rate_cf(ws, r1, r_tot, col + 3, tgt)
+        add_gap_cf(ws, r1, r_tot, col + 4)
         col += 5
     if extras:
         sc(ws, r_tot, col,     sum(extras[s]['arpedia'] for s in stores), bg='D9D9D9', bold=True)
@@ -659,7 +722,7 @@ def main():
     # ── 組裝 Excel（4 分頁）──
     wb = Workbook()
     wb.remove(wb.active)
-    NOTE = '※ 主機台數已排除認證機（類別2=2029）'
+    NOTE = '※ 主機台數已排除認證機（類別2=2029）　※ 搭售率已排除 SACare（現行 SACare 皆為檢測新機），僅計 ACPP+'
     for rname, cfg in REGIONS.items():
         short = rname[:2]
         dr  = results[('period', rname, 'range')]
