@@ -10,7 +10,7 @@
 可獨立執行（python3 daily_headcount.py），也可被 arpedia_daily.py 引用
 （呼叫 print_headcount()）。
 """
-import glob, os, email, email.header, io, re, unicodedata
+import glob, os, email, email.header, email.utils, io, re, unicodedata
 from datetime import datetime, timedelta
 import openpyxl
 
@@ -72,13 +72,18 @@ def _parse_demo(msg):
 
 
 def collect_reports(since_days=4, progress=True):
-    """掃收件匣，回傳 {(date_token, code): {'xlsx': bytes, 'demo': int|None}}。
+    """掃收件匣，回傳 {(date_token, code): {'xlsx': bytes, 'demo': int|None, 'ts': float}}。
     只收北一/北二 13 家。"""
     cut = (datetime.now() - timedelta(days=since_days)).timestamp()
+    def _mtime(f):
+        try:
+            return os.path.getmtime(f)
+        except OSError:                                 # Mail.app 掃描途中搬走/刪除
+            return 0
     files = [f for f in glob.glob(
                 os.path.join(MAIL_BASE, '*/INBOX.mbox/**/Messages/*.emlx'),
                 recursive=True)
-             if os.path.getmtime(f) >= cut]
+             if _mtime(f) >= cut]
     total = len(files)
     found = {}
     for i, f in enumerate(files, 1):
@@ -91,6 +96,10 @@ def collect_reports(since_days=4, progress=True):
             subj = dec(msg.get('Subject', ''))
             if 'aily' not in subj:                      # Daily / daily / DailyReport
                 continue
+            try:
+                ts = email.utils.parsedate_to_datetime(msg.get('Date')).timestamp()
+            except Exception:
+                ts = os.path.getmtime(f)
             for p in msg.walk():
                 fn = dec(p.get_filename() or '')
                 if not fn.endswith('.xlsx') or '日報' not in fn or '維修中心' in fn:
@@ -99,10 +108,15 @@ def collect_reports(since_days=4, progress=True):
                 md = re.search(r'(20\d{6})', fn)        # 檔名裡的日期
                 if not mc or not md or mc.group(1) not in OUR_CODES:
                     continue
+                data = p.get_payload(decode=True) or b''
+                # 有時同一份附件會以 application/applefile（AppleDouble 資源分岔）
+                # 進來，只有一百多 bytes、不是真的 xlsx。真 xlsx 一定是 PK 開頭。
+                if not data.startswith(b'PK'):
+                    continue
                 key = (md.group(1), mc.group(1))
-                if key not in found:                    # 同一封重複下載只取一次
-                    found[key] = {'xlsx': p.get_payload(decode=True),
-                                  'demo': _parse_demo(msg)}
+                prev = found.get(key)
+                if prev is None or ts > prev['ts']:     # 同日重寄以最新一封為準
+                    found[key] = {'xlsx': data, 'demo': _parse_demo(msg), 'ts': ts}
         except Exception:
             continue
     if progress and total:
