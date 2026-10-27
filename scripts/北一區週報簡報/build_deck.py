@@ -474,6 +474,28 @@ def threepp(start, end):
     return out
 
 
+def threepp_dss(path):
+    """使用者從 DSS 匯出的「3PP搭售率報表」（3PP_aggregate_rptD，密碼 SA1469）：
+    有些零搭售排除只有 DSS 才有，給了這個檔就以它為準。"""
+    import msoffcrypto
+    f = msoffcrypto.OfficeFile(open(path, 'rb'))
+    f.load_key(password='SA1469')
+    b = BytesIO()
+    f.decrypt(b)
+    ws = openpyxl.load_workbook(b, data_only=True).worksheets[0]
+    rows = list(ws.iter_rows(values_only=True))
+    hdr, by_code = rows[0], {r[0]: r for r in rows[1:] if r[0]}
+    col = {h: i for i, h in enumerate(hdr)}
+    out = {}
+    for code, name, _ in STORES:
+        if code not in by_code:
+            raise SystemExit(f'❌ DSS 3PP 檔裡沒有門市 {code} {name}：{path}')
+        r = by_code[code]
+        out[name] = {dn: tuple(float(r[col[f'{dn}{t}']] or 0) for t in ('搭售量', '配件', '零搭售量'))
+                     for _, dn in DEVICES}
+    return out
+
+
 # ═════════════════════════ MySetup ═════════════════════════
 def mysetup(P):
     import warranty_report_all as w
@@ -611,6 +633,7 @@ def find_template(P):
     有報告人定稿信（北二區 Yuni）時，同一週優先用定稿（含她手改的內容與評語定稿）。"""
     dirs = [DECK_DIR]
     if R.get('final_mail'):
+        sys.modules.setdefault('build_deck', sys.modules[__name__])   # 直接執行時，讓 finals_mail 用已設定區域的這份模組
         import finals_mail
         try:
             finals_mail.fetch_finals()
@@ -680,9 +703,12 @@ def is_formula(t, r, c):
 
 
 class Ops(list):
+    skipped = None
+
     def set(self, s, t, r, c, v, bg=None, force=False):
         """寫一格；有公式的格子預設不覆蓋（讓 Keynote 自己算），force=True 才寫。"""
         if is_formula(t, r, c) and not force:
+            self.skipped = (self.skipped or []) + [(s, t, r, c)]
             return
         op = {'op': 'cell', 's': s['i'], 't': t['i'], 'r': r, 'c': c}
         if v is not None:
@@ -737,6 +763,22 @@ def chart_image_ops(sl, kind, sid, chart_files):
     return ops
 
 
+def check_formula_sources(D, ops):
+    """跳過的公式格若引用了這次完全沒寫到的表格，結果就會停在上週（例：北二區應達成率引用頁上小表的日期）→ 警告。"""
+    written = {(op['s'], op['t']) for op in ops if op.get('op') == 'cell'}
+    seen = set()
+    for s, t, r, c in ops.skipped or []:
+        fm = t['cells'][r][c][1]
+        for t2 in s['tables']:                   # 公式只寫表名時指同一頁的表
+            key = (s['i'], t2['i'])
+            if key in written or key in seen or not re.search(rf"(^|[=(+\-*/÷×,\s']){re.escape(t2['name'])}'?::", fm):
+                continue
+            seen.add(key)
+            what = (c and cell(t, r, c - 1)) or cell(t, r, 0) or cell(t, 0, c)    # 格子名稱：左邊的標籤優先
+            warn(f"第 {s['i'] + 1} 頁「{what}」是公式 {fm}，引用的「{t2['name']}」本次沒有更新，"
+                 f"數字可能停在上週，請檢查")
+
+
 def build_ops(P, D, data, chart_files):
     ops = Ops()
     data['chart_jobs'] = []
@@ -761,6 +803,12 @@ def build_ops(P, D, data, chart_files):
     ops.set(s, t, 1, 0, f'Date : {P.wk_start:%m/%d}～{P.wk_end:%m/%d}')
     ops.set(s, t, 1, 6, P.days_in_month)
     ops.set(s, t, 2, 6, f'{P.wk_end.day / P.days_in_month:.2%}')
+    # 同頁的小表（10月／31、日期／24、應達成率＝B2÷B1）：北二區的應達成率格是引用它的公式，要一起更新
+    for _, th in D.tables(lambda x, xs: xs['i'] == s['i'] and x['rows'] == 3 and cell(x, 1, 0) == '日期'
+                          and cell(x, 2, 0) == '應達成率'):
+        ops.set(s, th, 0, 0, f'{P.wk_end.month}月')
+        ops.set(s, th, 0, 1, P.days_in_month)
+        ops.set(s, th, 1, 1, P.wk_end.day)
     for r, vals in data['summary'].items():
         for k, v in enumerate(vals):
             # 兩區一律照門市週報 Excel 的算法（2026-10-19 使用者指定統一用北一區算法）：
@@ -769,7 +817,8 @@ def build_ops(P, D, data, chart_files):
             ops.set(s, t, r - 3, k + 1, fmt_summary(r, k, v), force=k in (3, 5))
 
     # ── 重點項目進度 ──
-    s, t = D.opt(lambda t, s: re.fullmatch(r'\d\dQ\d', cell(t, 0, 0) or '') and cell(t, 1, 0) == '重點項目', 'AC+ 佔比')
+    # 左上角是季別（27Q1）；Yuni 的定稿會把標題列清空
+    s, t = D.opt(lambda t, s: re.fullmatch(r'(\d\dQ\d)?', cell(t, 0, 0) or '') and cell(t, 1, 0) == '重點項目', 'AC+ 佔比')
     for c in range(t['cols'] if t else 0):
         if re.fullmatch(r'\d\dQ\d', cell(t, 0, c)):
             ops.set(s, t, 0, c, P.qtag)
@@ -1055,6 +1104,7 @@ def main():
     ap.add_argument('--out-dir', type=Path, help='簡報輸出資料夾（預設：桌面/週報）')
     ap.add_argument('--xlsx', help='沿用已產生的週報 Excel')
     ap.add_argument('--force', action='store_true', help='目標 .key 已存在也覆蓋')
+    ap.add_argument('--3pp', dest='tpp', help='本週 3PP 用 DSS 匯出的 3PP_aggregate_rptD 檔（零搭售排除以 DSS 為準）')
     a = ap.parse_args()
     configure(a.region)
 
@@ -1094,7 +1144,11 @@ def main():
     data['summary'] = summary_table(dwb, *data['people'],
                                     {1: X['traffic_week'], 2: X['traffic_mtd'], 3: X['traffic_pm_same']})
     log('3PP 重建（本週、上週）…')
-    data['3pp_week'] = threepp(P.wk_start, P.wk_end)
+    if a.tpp:
+        log(f'本週 3PP 用 DSS 匯出檔：{Path(a.tpp).name}')
+        data['3pp_week'] = threepp_dss(a.tpp)
+    else:
+        data['3pp_week'] = threepp(P.wk_start, P.wk_end)
     data['3pp_pweek'] = threepp(P.pw_start, P.pw_end)
     _, t3 = find_3pp(D)
     tr = next(r for r in range(t3['rows']) if cell(t3, r, 0) == 'Total')
@@ -1114,6 +1168,7 @@ def main():
 
     files = make_charts(P, data, work)
     ops = build_ops(P, D, data, files)
+    check_formula_sources(D, ops)
     (work / 'ops.json').write_text(json.dumps(ops, ensure_ascii=False, indent=1), encoding='utf-8')
     log(f'寫入 Keynote（{len(ops)} 個操作）…')
     kn('apply', tmp_deck, work / 'ops.json')

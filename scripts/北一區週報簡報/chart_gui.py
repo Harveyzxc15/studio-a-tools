@@ -55,8 +55,11 @@ def _keys(*codes):
     _as(PROC + '\n' + '\n'.join(f'key code {c}\ndelay 0.25' for c in codes) + '\nend tell')
 
 
+KEYCODE = {'c': 8, 'v': 9}   # 用按鍵碼：keystroke "c" 在注音等輸入法下會被輸入法吃掉
+
+
 def _cmd(ch):
-    _as(f'{PROC} to keystroke "{ch}" using command down')
+    _as(f'{PROC} to key code {KEYCODE[ch]} using command down')
     time.sleep(0.8)
 
 
@@ -129,7 +132,22 @@ set frontmost to true
 set position of (first window whose name is "{doc_name}") to {{0, 25}}
 end tell''')
         time.sleep(0.8)
-        # Tab 依序選取頁面上的物件，直到選到圖表（圖表選單可用）為止
+        # 直接點圖表：縮放成「符合幻燈片」後，幻燈片置中於畫布，點中心偏左下（只有圖表長條，避開分隔虛線與上方表格）。
+        # Tab 不會走到圖表，只在存檔時圖表剛好是選取狀態才碰巧成功，留作備援。
+        _as(f'{PROC} to click menu item "符合幻燈片" of menu 1 of menu item "縮放" of menu "顯示方式" '
+            'of menu bar item "顯示方式" of menu bar 1')
+        time.sleep(0.8)
+        x, y, w, h = map(int, _as(PROC + f''' to tell (first window whose name is "{doc_name}")
+tell scroll area 1 of (last splitter group of splitter group 1 of splitter group 1)
+set p to position
+set s to size
+end tell
+return ((item 1 of p) as text) & "," & ((item 2 of p) as text) & "," & ((item 1 of s) as text) & "," & ((item 2 of s) as text)
+end tell''').split(','))
+        W, H = map(int, _as(f'tell application id "com.apple.Keynote" to tell document "{doc_name}" to '
+                            'return (width as text) & "," & (height as text)').split(','))
+        k = min(w / W, h / H)
+        _click(x + w / 2 - 100 * k, y + h / 2 + 60 * k)
         ok = _as(PROC + f'''
 repeat with i from 1 to 20
   if enabled of {CHART_MENU} then return "ok"
