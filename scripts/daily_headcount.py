@@ -125,15 +125,16 @@ def read_headcount(data):
 
 
 def read_traffic(data):
-    """從 xlsx bytes 讀 (今日來客數, 本月累積來客數)，找標籤抓右邊兩格。"""
+    """從 xlsx bytes 讀 (今日來客數, 本月累積來客數, 上月同期)，找標籤抓右邊第 1、2、5 格。"""
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     ws = wb[wb.sheetnames[0]]
     for row in ws.iter_rows():
         for cell in row:
             if isinstance(cell.value, str) and cell.value.strip() == '來客數':
                 return (ws.cell(cell.row, cell.column + 1).value,
-                        ws.cell(cell.row, cell.column + 2).value)
-    return None, None
+                        ws.cell(cell.row, cell.column + 2).value,
+                        ws.cell(cell.row, cell.column + 5).value)
+    return None, None, None
 
 
 def _i(v):
@@ -207,7 +208,7 @@ def print_headcount(region=None):
 def print_traffic_compare(reports, target, yesterday, tr_data, region):
     """比對門市日報自填的「來客數」與工具查到的人流（ShopperTrak／無計數器公式）。
 
-    tr_data[store] = [昨日, 月累, 上月同期]；日報只有「今日／本月累積」兩欄可比。
+    tr_data[store] = [昨日, 月累, 上月同期]；對日報「今日／本月累積／上月同期」三欄。
     """
     if not reports:
         return
@@ -218,13 +219,15 @@ def print_traffic_compare(reports, target, yesterday, tr_data, region):
     print(f"【人流比對：日報自填 vs 工具查詢（{region}）】")
     header = (pad('門市', 12) + pad('日報昨日', 10, '>') + pad('工具昨日', 10, '>')
               + pad('差異', 10, '>') + pad('日報月累', 12, '>')
-              + pad('工具月累', 12, '>') + pad('差異', 10, '>'))
+              + pad('工具月累', 12, '>') + pad('差異', 10, '>')
+              + pad('日報上月同期', 14, '>') + pad('工具上月同期', 14, '>')
+              + pad('差異', 10, '>'))
     print(header)
     print('-' * w(header))
 
     def fmt(v):
         """日報欄：非數值＝門市沒填。"""
-        return f"{v:,}" if isinstance(v, (int, float)) else '未填'
+        return f"{round(v):,}" if isinstance(v, (int, float)) else '未填'
 
     def fmt_t(v):
         """工具欄：None＝這店沒查到（無計數器／ShopperTrak 略過），不是門市沒填。"""
@@ -233,7 +236,7 @@ def print_traffic_compare(reports, target, yesterday, tr_data, region):
     def diff(m, t):
         if not isinstance(m, (int, float)) or t is None:
             return '--'
-        d = int(m) - t
+        d = round(m) - t
         return '一致' if d == 0 else f"{d:+,}"
 
     mismatch = []
@@ -242,11 +245,13 @@ def print_traffic_compare(reports, target, yesterday, tr_data, region):
         if rec is None:
             print(pad(store, 12) + pad('未收到', 10, '>'))
             continue
-        m_day, m_mon = read_traffic(rec['xlsx'])
-        t_day, t_mon = (tr_data.get(store) or [None, None, None])[:2]
+        m_day, m_mon, m_prev = read_traffic(rec['xlsx'])
+        t_day, t_mon, t_prev = (tr_data.get(store) or [None, None, None])[:3]
         print(pad(store, 12) + pad(fmt(m_day), 10, '>') + pad(fmt_t(t_day), 10, '>')
               + pad(diff(m_day, t_day), 10, '>') + pad(fmt(m_mon), 12, '>')
-              + pad(fmt_t(t_mon), 12, '>') + pad(diff(m_mon, t_mon), 10, '>'))
+              + pad(fmt_t(t_mon), 12, '>') + pad(diff(m_mon, t_mon), 10, '>')
+              + pad(fmt(m_prev), 14, '>') + pad(fmt_t(t_prev), 14, '>')
+              + pad(diff(m_prev, t_prev), 10, '>'))
         if not isinstance(m_day, (int, float)) or (
                 t_day is not None and int(m_day) != t_day):
             mismatch.append(store)
