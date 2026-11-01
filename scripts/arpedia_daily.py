@@ -6,11 +6,12 @@ ARpedia 日報 - brand_id='496' (BI-B_AR套組)
 import subprocess, sys, json
 from datetime import date, timedelta
 from pathlib import Path
+import os
 
-CP   = "/Users/bob.1469/Desktop/north1-weekly-report:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*"
+CP   = os.path.expanduser("~/Desktop/north1-weekly-report:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*")
 JAVA = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/bin/java"
-CWD  = "/Users/bob.1469/Desktop/north1-weekly-report"
-CONFIG = Path("/Users/bob.1469/Desktop/north1-weekly-report/local_config.json")
+CWD  = os.path.expanduser("~/Desktop/north1-weekly-report")
+CONFIG = Path.home() / "Desktop/north1-weekly-report/local_config.json"
 
 STORES     = ['士林', '微風', '美麗華', '阿波羅', '高島屋', '羅東']
 SHOP_CODES = {'士林': '4', '微風': '5', '美麗華': '24', '阿波羅': '46', '高島屋': '54', '羅東': '57'}
@@ -235,8 +236,22 @@ def main():
         print()
         print_traffic_compare(reports, target, yesterday, tr_data, '北一區')
         print()
+        from schedule_compare import print_schedule_compare
+        print_schedule_compare(reports, target, '北一區')
+        print()
     except Exception as e:
         print(f"\n  ⚠️  門市人數統計失敗：{e}")
+
+    # ── 北ㄧ區日報信：Demo＋ARpedia＋區內盤點差異（可開 Mail 草稿）──
+    try:
+        from inventory_diff import print_region_block
+        from daily_headcount import CODES
+        print("=" * 80)
+        print_region_block(reports, target, yesterday,
+                           ar_totals if ar_results else None, CODES['北一區'])
+        print()
+    except Exception as e:
+        print(f"\n  ⚠️  日報信內文產生失敗：{e}")
 
 if __name__ == "__main__":
     main()

@@ -65,6 +65,19 @@ def _body_text(msg):
     return ''
 
 
+def _all_text(msg):
+    """所有 text/plain 段落接起來（有些信內文被圖片切成好幾段）。"""
+    out = []
+    for p in (msg.walk() if msg.is_multipart() else [msg]):
+        if p.get_content_type() == 'text/plain':
+            try:
+                out.append(p.get_payload(decode=True).decode(
+                    p.get_content_charset() or 'utf-8', 'ignore'))
+            except Exception:
+                continue
+    return '\n'.join(out)
+
+
 def _parse_demo(msg):
     """從內文抓 ARpedia Demo 次數，找不到回 None。"""
     m = _DEMO_RE.search(_body_text(msg))
@@ -72,7 +85,7 @@ def _parse_demo(msg):
 
 
 def collect_reports(since_days=4, progress=True):
-    """掃收件匣，回傳 {(date_token, code): {'xlsx': bytes, 'demo': int|None, 'ts': float}}。
+    """掃收件匣，回傳 {(date_token, code): {'xlsx': bytes, 'demo': int|None, 'ts': float, 'body': str}}。
     只收北一/北二 13 家。"""
     cut = (datetime.now() - timedelta(days=since_days)).timestamp()
     def _mtime(f):
@@ -116,7 +129,8 @@ def collect_reports(since_days=4, progress=True):
                 key = (md.group(1), mc.group(1))
                 prev = found.get(key)
                 if prev is None or ts > prev['ts']:     # 同日重寄以最新一封為準
-                    found[key] = {'xlsx': data, 'demo': _parse_demo(msg), 'ts': ts}
+                    found[key] = {'xlsx': data, 'demo': _parse_demo(msg), 'ts': ts,
+                                  'body': _all_text(msg)}
         except Exception:
             continue
     if progress and total:
