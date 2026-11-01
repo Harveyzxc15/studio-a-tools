@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-門市日報信「盤點差異」→ 統一格式（北一區日報信用），並可開 Mail 草稿。
+門市日報信「盤點差異」→ 統一格式，產生區日報信內文（北一／北二），並可開 Mail 草稿。
 
 規則抓：從信件內文找每段「盤點差異」，逐行判斷差異類型、抓欄位，
 套固定格式（見記憶 inventory_diff_report_format）。缺欄位或認不出類型的
 標「待確認」並附原文，不猜。
 
-由 arpedia_daily.py 呼叫 print_region_block()。
+由 arpedia_daily.py（北一）／arpedia_daily_n2.py（北二）呼叫 print_region_block()。
+⚠️ 兩個 repo（studio-a-tools、daily-tracker）各放一份，內容須相同。
+daily-tracker 是公開 repo：簽名、寄件人等個資一律由呼叫端傳入，不寫在這裡。
 """
-import html, os, re, subprocess, time
+import html, os, re, subprocess, tempfile, time
 from email.message import EmailMessage
 from email.utils import formataddr
 
-OUT_DIR = os.path.expanduser('~/工具中心/輸出/日報草稿')
+OUT_DIR = os.path.join(tempfile.gettempdir(), '日報草稿')   # 只是給 Mail 開的暫存檔
 
 # 調撥來源辨識用（13 店＋常見別名）
 KNOWN_STORES = ['士林', '微風', '美麗華', '阿波羅', '高島屋', '羅東', '永和', '板橋誠品',
@@ -126,9 +128,16 @@ def normalize(raw):
     return txt, all(f)
 
 
+# 各區信件寫法（照各自實寄信）
+REGIONS = {
+    '北一區': {'title': '北ㄧ區', 'short': {}},
+    '北二區': {'title': '北二區', 'short': {'新店裕隆城': '裕隆城'}},
+}
+
+
 def build_diff_section(reports, target, codes):
-    """回傳 (信件用行列表, 終端機核對用行列表, 待確認筆數)。codes={店名: 代碼}。"""
-    mail, check, pending = [], [], 0
+    """回傳 (各店差異 [(店名, [行])], 終端機核對用行列表, 待確認筆數)。codes={店名: 代碼}。"""
+    groups, check, pending = [], [], 0
     for store, code in codes.items():
         rec = reports.get((target, code))
         if rec is None:
@@ -137,58 +146,72 @@ def build_diff_section(reports, target, codes):
         raws = extract_diffs(rec.get('body', ''))
         if not raws:
             continue
-        mail.append(store)
+        lines = []
         check.append(f'  {store}')
         for raw in raws:
             txt, ok = normalize(raw)
             if txt is None:
                 pending += 1
-                mail.append(f'【待確認】{raw}')
+                lines.append(f'【待確認】{raw}')
                 check.append(f'    ⚠️ 認不出類型  原文：{raw}')
             else:
                 if not ok:
                     pending += 1
-                mail.append(txt if ok else f'【待確認】{txt}')
+                lines.append(txt if ok else f'【待確認】{txt}')
                 check.append(f'    {"✅" if ok else "⚠️ 缺欄位"} {txt}')
                 check.append(f'       原文：{raw}')
-    return mail, check, pending
+        groups.append((store, lines))
+    return groups, check, pending
 
 
-def body_text(demo, sales, diff_lines):
-    """sales=[本日, 本週, 本月, 累計]。"""
-    out = ['Dear 各位長官,', '', '附件為北ㄧ區日報請查收，謝謝。', '', 'ARpedia',
+def body_text(region, demo, sales, groups):
+    """sales=[本日, 本週, 本月, 累計]。北一／北二盤點段寫法不同，照各自實寄信。"""
+    cfg = REGIONS[region]
+    out = ['Dear 各位長官,', '', f'附件為{cfg["title"]}日報請查收，謝謝。', '', 'ARpedia',
            f'本日 Demo 數：{demo}', f'本日銷售：{sales[0]}', f'本週銷售：{sales[1]}',
            f'本月銷售：{sales[2]}', f'累計銷售：{sales[3]}', '']
-    out += ['本日區內盤點：'] + diff_lines if diff_lines else ['本日區內盤點：無差異']
+    if region == '北二區':
+        if not groups:
+            out.append('本日區內盤點無差異')
+        else:
+            out += ['盤點差異']
+            for store, lines in groups:
+                out += ['', cfg['short'].get(store, store)] + lines
+    else:
+        if not groups:
+            out.append('本日區內盤點：無差異')
+        else:
+            out.append('本日區內盤點：')
+            for store, lines in groups:
+                out += [cfg['short'].get(store, store)] + lines
     return '\n'.join(out)
 
 
-SIGNATURE = ['Bob 尤君暘', 'bob.yu@studioa.com.tw', '', 'STUDIO A 晶實科技股份有限公司',
-             '台北市中山區八德路二段260號7樓']
-
-
-def make_draft(target, text):
-    """產生草稿 .eml（收件人空白、副本 rm@、不帶附件），用 Mail 開啟後「再次傳送」轉成可編輯。"""
+def make_draft(region, target, text, signature=None, sender=None):
+    """產生草稿 .eml（收件人空白、副本 rm@、不帶附件），用 Mail 開啟後「再次傳送」轉成可編輯。
+    signature＝簽名行列表；sender＝(名稱, email)。不給則由 Mail 用預設帳號、簽名自己選。"""
     m = EmailMessage()
-    m['From'] = formataddr(('Bob', 'Bob.Yu@studioa.com.tw'))
+    if sender:
+        m['From'] = formataddr(sender)
     m['Cc'] = formataddr(('Regional Manager', 'rm@studioa.com.tw'))
-    m['Subject'] = f'{target} 北ㄧ區 Daily report'
+    m['Subject'] = f'{target} {REGIONS[region]["title"]} Daily report'
     m['X-Uniform-Type-Identifier'] = 'com.apple.mail-draft'
     m['X-Unsent'] = '1'
-    m.set_content(text + '\n\n\n' + '\n'.join(SIGNATURE) + '\n')
+    sig = signature or []
+    m.set_content(text + ('\n\n\n' + '\n'.join(sig) if sig else '') + '\n')
     div = lambda l: f'<div>{html.escape(l) if l else "<br>"}</div>'
     m.add_alternative('<html><body dir="auto" style="font-family:\'PingFang TC\';font-size:14px">'
                       + ''.join(div(l) for l in text.split('\n'))
-                      + '<br><br><br>' + ''.join(div(l) for l in SIGNATURE) + '</body></html>',
-                      subtype='html')
+                      + ('<br><br><br>' + ''.join(div(l) for l in sig) if sig else '')
+                      + '</body></html>', subtype='html')
     os.makedirs(OUT_DIR, exist_ok=True)
-    path = os.path.join(OUT_DIR, f'{target}_北一區日報草稿.eml')
+    path = os.path.join(OUT_DIR, f'{target}_{region}日報草稿.eml')
     with open(path, 'wb') as fh:
         fh.write(bytes(m))
     subprocess.run(['open', '-a', 'Mail', path], check=True)
     time.sleep(3)
     # 開啟的 .eml 是唯讀檢視，點「郵件 > 再次傳送」才變成可編輯草稿
-    r = subprocess.run(['osascript', '-e', '''
+    r = subprocess.run(['osascript', '-e', """
 tell application "Mail" to activate
 tell application "System Events" to tell process "Mail"
   repeat with mb in menu bar items of menu bar 1
@@ -198,16 +221,18 @@ tell application "System Events" to tell process "Mail"
     end try
   end repeat
 end tell
-return "fail"'''], capture_output=True, text=True)
+return "fail\""""], capture_output=True, text=True)
     return path, r.stdout.strip() == 'ok'
 
 
-def print_region_block(reports, target, yesterday, ar_totals, codes):
+def print_region_block(reports, target, yesterday, ar_totals, codes, region,
+                       signature=None, sender=None):
     """印盤點差異核對＋日報信內文（可複製），終端機互動時詢問是否開 Mail 草稿。
     ar_totals=[本日, 本週, 本月, 累計] 或 None（EPB 失敗）。"""
     import sys
     from datetime import datetime
-    print('【北ㄧ區日報信：區內盤點差異】')
+    title = REGIONS[region]['title']
+    print(f'【{title}日報信：區內盤點差異】')
     if not target:
         print('  ⚠️  沒有門市日報信，略過')
         return
@@ -217,8 +242,8 @@ def print_region_block(reports, target, yesterday, ar_totals, codes):
                if (r := reports.get((target, c))) and r['demo'] is not None)
     no_demo = [s for s, c in codes.items()
                if (r := reports.get((target, c))) is None or r['demo'] is None]
-    mail, check, pending = build_diff_section(reports, target, codes)
-    print('\n'.join(check) if check else '  六店皆無差異')
+    groups, check, pending = build_diff_section(reports, target, codes)
+    print('\n'.join(check) if check else '  各店皆無差異')
     if no_demo:
         print(f'  ⚠️  Demo 數未計入（未收到信或沒填）：{"、".join(no_demo)}')
     if pending:
@@ -226,8 +251,8 @@ def print_region_block(reports, target, yesterday, ar_totals, codes):
     if ar_totals is None:
         print('  ⚠️  ARpedia 銷售查詢失敗，不產生信件內文')
         return
-    text = body_text(demo, ar_totals, mail)
-    print(f'\n【{target} 北ㄧ區 Daily report 內文（可複製）】')
+    text = body_text(region, demo, ar_totals, groups)
+    print(f'\n【{target} {title} Daily report 內文（可複製）】')
     print('-' * 60)
     print(text)
     print('-' * 60)
@@ -239,8 +264,10 @@ def print_region_block(reports, target, yesterday, ar_totals, codes):
         return
     if ans != 'y':
         return
-    path, editable = make_draft(target, text)
+    path, editable = make_draft(region, target, text, signature, sender)
     print(f'  草稿檔：{path}')
     if not editable:
         print('  ⚠️  沒辦法自動轉成可編輯：請在 Mail 選單「郵件 > 再次傳送」')
     print('  DSS 截圖請自己貼；收件人空白、副本 rm@')
+    if not signature:
+        print('  簽名請在草稿右上「簽名檔」選單選')

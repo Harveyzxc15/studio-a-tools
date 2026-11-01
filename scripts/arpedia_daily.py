@@ -248,7 +248,10 @@ def main():
         from daily_headcount import CODES
         print("=" * 80)
         print_region_block(reports, target, yesterday,
-                           ar_totals if ar_results else None, CODES['北一區'])
+                           ar_totals if ar_results else None, CODES['北一區'], '北一區',
+                           signature=['Bob 尤君暘', 'bob.yu@studioa.com.tw', '',
+                                      'STUDIO A 晶實科技股份有限公司', '台北市中山區八德路二段260號7樓'],
+                           sender=('Bob', 'Bob.Yu@studioa.com.tw'))
         print()
     except Exception as e:
         print(f"\n  ⚠️  日報信內文產生失敗：{e}")
