@@ -130,6 +130,7 @@ class Period:
         self.pw_start = self.pw_end - timedelta(days=6)
         self.m_start = wk_end.replace(day=1)
         self.days_in_month = calendar.monthrange(wk_end.year, wk_end.month)[1]
+        self.month_end = wk_end.day == self.days_in_month   # 週六剛好是月底＝整月版週報（比照 W01 9 月版）
         fy, q, wk = eng.fy_week(wk_end)
         self.fy, self.q, self.wk = fy, q, wk
         self.label = R['label_fmt'].format(q=q, wk=wk)   # 北一 Q1W03／北二 Q1W3
@@ -338,7 +339,7 @@ def summary_table(wb, people, off, traffic):
     for r in wb['sac'].iter_rows(min_row=2, values_only=True):
         if r[0] in (1, 2, 3):
             sacJ[r[0]] += (r[3] or 0) * price.get(r[1], 0)
-    sacK = {i: math.floor(sacJ[i] * 0.5 + 0.5) for i in (1, 2, 3)}   # Excel ROUND 是四捨五入；Python round() .5 會捨到偶數
+    sacK = {i: xround(sacJ[i] * 0.5) for i in (1, 2, 3)}
     ttl = {}
     for r in wb['ttl'].iter_rows(min_row=2, values_only=True):
         if r[1] in (1, 2, 3):
@@ -381,7 +382,7 @@ def summary_table(wb, people, off, traffic):
         a[35] = v(i, 'air_TQTY')
         a[36] = v(i, 'ACPP_ACC') + v(i, 'SAC_air')
         denom = people if i == 1 else people + off
-        a[38] = math.floor(a[8] / denom + 0.5) if denom else None      # 人數 0（班表抓不到）時留空，不讓整份中斷
+        a[38] = xround(a[8] / denom) if denom else None      # 人數 0（班表抓不到）時留空，不讓整份中斷
         a[39] = traffic[i]
         a[40] = cnt.get(i, 0)
         a[41] = a[40] / a[39] if a[39] else 0
@@ -543,8 +544,8 @@ def repair(P):
     periods = rr.calc_periods(P.wk_end)
     res = rr.parse_results(rr.run_epb(rr.build_sql(periods)), periods)
     # 圖表：去年 1 月起每月 ＋ 本月按週（月初~第一個週六為 W1）
-    # 週六剛好是月底（整月版週報，例如 W05 10/25~10/31）：當月畫成整月一根，不分週（比照 W01 9 月版）
-    month_end = P.wk_end.day == calendar.monthrange(P.wk_end.year, P.wk_end.month)[1]
+    # 整月版週報（P.month_end）：當月畫成整月一根，不分週
+    month_end = P.month_end
     months = []
     y, mth = P.wk_end.year - 1, 1
     while (y, mth) < (P.wk_end.year, P.wk_end.month) or (month_end and (y, mth) == (P.wk_end.year, P.wk_end.month)):
@@ -688,6 +689,35 @@ class Deck:
         return hits[0]
 
 
+def xround(x):
+    """同 Excel ROUND(x, 0)：.5 一律遠離 0（Python round() 會捨到偶數）。"""
+    return int(math.copysign(math.floor(abs(x) + 0.5), x))
+
+
+def title_3pp(P, old):
+    """3PP 頁標題：平常寫週次（Q1W05／北二 2027 Q1W5），整月版寫月份（10月／北二 2026 10月）。"""
+    core = f'{P.wk_end.month}月' if P.month_end else P.label
+    year = P.wk_end.year if P.month_end else P.fy
+    prefix = (f'{year} ' if re.match(r'\s*\d{4} ', old) else '') + f'{core} '
+    return re.sub(r'^.*?(?=3PP搭售統計)', prefix, old, count=1)
+
+
+def month_total_from_template(D, P):
+    """範本是上個月的整月版（3PP 頁標題「10月 3PP搭售統計」，各店列＝DSS 整月）時，回傳它 Total 列的
+    {品類: (搭售, 配件, 零搭售)}，新月份列就用這個（比照 W01 的九月列＝DSS 9 月 Total）；不是就回 None。"""
+    s, t = find_3pp(D)
+    pm = (P.wk_end.month - 2) % 12 + 1
+    if not any(re.search(rf'(?<!\d){pm}月 ?3PP搭售統計', x['t']) for x in s['texts']):
+        return None
+    r = next(r for r in range(t['rows']) if cell(t, r, 0) == 'Total')
+    devs = [d for _, d in DEVICES]
+    out = {}
+    for c in range(t['cols']):
+        if cell(t, 0, c) in devs:
+            out[cell(t, 0, c)] = tuple(int(float(cell(t, r, c + k).replace(',', '') or 0)) for k in (0, 1, 3))
+    return out
+
+
 def find_3pp(D):
     """3PP 搭售統計表：第二欄是 CPU、26 欄、有 Total 列；北二區頁上另有一張較小的備用表，取列數最多的。"""
     hits = D.tables(lambda t, s: t['cols'] == 26 and cell(t, 0, 1) == 'CPU'
@@ -786,9 +816,14 @@ def build_ops(P, D, data, chart_files):
     ops = Ops()
     data['chart_jobs'] = []
     # ── 週次、日期標題 ──
+    s3pp = find_3pp(D)[0]['i']
     for s in D.slides:
         for x in s['texts']:
             t = x['t']
+            if s['i'] == s3pp and '3PP搭售統計' in t:
+                if title_3pp(P, t) != t:
+                    ops.append({'op': 'text', 's': s['i'], 'old': t, 'v': title_3pp(P, t)})
+                continue
             nt = re.sub(r'Q\dW\d{1,2}', P.label, t)
             # 北二區寫「27 Q1W2」「2027 Q1W2」：週次前的年度跟著換（財年跨年時才會變）
             nt = re.sub(r'(?<!\d)(20)?\d\d(?= ?Q\dW)', lambda m: (str(P.fy) if m[1] else f'{P.fy % 100}'), nt)
@@ -912,7 +947,8 @@ def build_ops(P, D, data, chart_files):
                 continue
             months.append((lab, {dev: tuple(parse(cell(t, r, c + k)) for k in (0, 1, 3)) for dev, c in dev_col.items()}))
         ops.append({'op': 'rowcount', 's': s['i'], 't': t['i'], 'n': t['rows'] + 1})
-        mv = {dev: tuple(sum(data['3pp_month'][n][dev][k] for n in NAMES) for k in range(3)) for dev in dev_col}
+        mv = data.get('3pp_month_total') or \
+            {dev: tuple(sum(data['3pp_month'][n][dev][k] for n in NAMES) for k in range(3)) for dev in dev_col}
         months.insert(0, (need, mv))
 
         def put(r, lab, vals):
@@ -1157,8 +1193,12 @@ def main():
     tr = next(r for r in range(t3['rows']) if cell(t3, r, 0) == 'Total')
     if cell(t3, tr + 1, 0).replace('ㄧ', '一') != MONTH_ZH[(P.wk_end.month - 2) % 12 + 1]:
         pm_end = P.m_start - timedelta(days=1)
-        log(f'3PP 重建（上個月整月 {pm_end:%Y-%m}，新增月份列用）…')
-        data['3pp_month'] = threepp(pm_end.replace(day=1), pm_end)
+        data['3pp_month_total'] = month_total_from_template(D, P)
+        if data['3pp_month_total']:
+            log(f'3PP 新增月份列 {pm_end:%Y-%m}：沿用範本整月版的 Total 列（DSS 整月）')
+        else:
+            log(f'3PP 重建（上個月整月 {pm_end:%Y-%m}，新增月份列用）…')
+            data['3pp_month'] = threepp(pm_end.replace(day=1), pm_end)
     data['mysetup'] = mysetup(P)
     data['key_items'] = {}
     for _, tk in D.tables(lambda t, s: cell(t, 0, 0) == '重點項目' and store_key(cell(t, 0, 1))):
