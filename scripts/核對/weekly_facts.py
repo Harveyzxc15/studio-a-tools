@@ -48,7 +48,8 @@ def to_val(cell, header):
     v = float(cell.rstrip('%').replace(',', ''))
     if pct:
         return v / 100, 'rate'
-    if re.search(r'率|比|佔比|％|%', header) or ('.' in cell and abs(v) <= 1.5):
+    # 「週對比 本週／上週／差異」是金額欄：「週對比」的「比」不算比率
+    if re.search(r'率|比|佔比|％|%', header.replace('週對比', '')) or ('.' in cell and abs(v) <= 1.5):
         return v, 'rate'
     return v, ('amt' if abs(v) >= 1000 else None)
 

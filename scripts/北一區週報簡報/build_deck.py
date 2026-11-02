@@ -1079,6 +1079,9 @@ def sheet_md(ws, max_col=40, max_row=None):
 def comment_material(P, data, xlsx_calc, out_dir, prev_comments):
     wb = openpyxl.load_workbook(xlsx_calc, data_only=True)
     md = [f'# {REGION}週報 {P.full} 評語素材（本週 {P.wk_start:%m/%d}~{P.wk_end:%m/%d}，上週 {P.pw_start:%m/%d}~{P.pw_end:%m/%d}）\n']
+    tw, tm = data['summary'][7][0], data['summary'][7][1]
+    md.append(f'簡報業績總表「總營業額」：當週 {tw:,.0f}、本月累積 {tm:,.0f}（講稿的總營業額用這個；跟下面週報 Excel「總業績」'
+              f'的差＝SA Care 計法不同：DSS 門市週報以價目表價×套數、週報 Excel 用成交金額）\n')
     md.append('## 上週簡報的評語（追蹤「先前要求的事項」用）\n')
     for store, (a, b) in prev_comments.items():
         md.append(f'### {store}\n- 上週店點狀況：{a}\n- 執行進度與改善狀況：{b}\n')
@@ -1143,6 +1146,8 @@ def learn_from_last_week(tmpl, D):
     with log_p.open('a', encoding='utf-8') as fh:
         fh.write('\n'.join(lines) + '\n')
     log(f'評語學習：{prev_full} 共 {changed} 段被修改，已記入 評語修改紀錄.md')
+    import edit_stats
+    log(f'評語貼近度已更新：{edit_stats.main()}')
 
 
 def prev_comments_of(D):
@@ -1242,6 +1247,13 @@ def main():
 
     if not a.out_dir:
         learn_from_last_week(tmpl, D)
+        src = OUT_BASE / '講稿定稿來源.json'          # 上週實際講的講稿（北一：週三會議 Google 文件）
+        if src.exists() and REGION in json.loads(src.read_text(encoding='utf-8')):
+            try:
+                import speech_finals
+                speech_finals.fetch(Period(P.pw_end).full)
+            except (Exception, SystemExit) as e:
+                warn(f'上週講稿定稿沒取回（{str(e)[:80]}），寫講稿時請使用者確認')
     mat = comment_material(P, data, xlsx_calc, work, prev_comments_of(D))
     repairs = '、'.join(k.replace('維修', '') for k in R['repair'])
     manual = ['維修中心預約', f'SACare 整機搭售（{repairs} 3PP 頁）', '維修滿意度 CSAT']

@@ -165,16 +165,21 @@ def context(text, pos, stores):
     names = stores + list(STORE_ALIAS) + REGION_WORDS
     in_clause = _last_of(names, clause)
     store = in_clause or _last_of([n for n in names if n != '區內'], sent)
+    owner = re.match(r'^(\S{2,4})：', text)                 # 週報評語：整段都是這家店
+    if not store and owner:
+        store = owner[1]                      # 段落分成好幾句（Yuni 寫法）：後面的句子沒講店名＝還是這家店
     store = STORE_ALIAS.get(store, store)
     if not store or store in REGION_WORDS:
         store = ''                            # 沒講店名＝講全區
     # 子句沒講店名時，前面講過的店不一定延續（Bob 整段逗號串接）→ 該店或全區都接受
-    owned = re.match(r'^(\S{2,4})：', text) is not None      # 週報評語：整段都是這家店
+    owned = owner is not None
     stores_ok = {store} if (in_clause or owned) else {store, ''}
     prod_clause = _last_of(list(PRODUCTS), clause)
     product, attr = prod_clause or _last_of(list(PRODUCTS), sent), _last_of(list(ATTRS), sent)
     if attr in STANDALONE and product and sent.rfind(attr) > sent.rfind(product):
         product = None                        # 「iPad 7 台，ARpedia 1 套」：ARpedia 不屬於 iPad
+    elif attr in STANDALONE and product and sent.rfind(product) > sent.rfind(attr):
+        attr = None                           # 「Speaker 3.8 萬，iPad 17 台，增加 4 台」：後面講的 iPad 才是主詞
     loose_prod = product is not None and prod_clause is None   # 產品是前面子句延續來的，不一定還適用
     loose_attr = attr is not None and _last_of(list(ATTRS), clause) is None
     return store, product, attr, (stores_ok, loose_prod, loose_attr, prod_clause is not None)
@@ -272,8 +277,26 @@ def check_numbers(text, facts, stores):
                 ok_prod = generic or not product or any(w.lower() in l.lower() for w in PRODUCTS[product]) \
                     or (loose_prod and no_prod and attr is not None and ok_attr)
                 return (ok_store and ok_prod and ok_attr, ok_store + ok_prod + ok_attr, base)
-            hits.sort(key=fit, reverse=True)
+
+            # 同分時挑最像的那筆：子句講的店（沒講＝全區）、期間詞對得上、% 對「率」、數值最接近
+            # 「20% 目標」「目標 7.8%」才是目標值；「低於目標」只是比較
+            is_target = re.match(r'^\s*(的)?目標', text[tok['end']:]) or re.search(r'目標\s*$', text[:tok['pos']])
+            want_p = '目標' if is_target else ('上月同期' if '上月' in clause else None)
+            want_s = store if len(stores_ok) == 1 else ''
+            t = {'%': tok['x'] / 100, '％': tok['x'] / 100, '成': tok['x'] / 10,
+                 '萬': tok['x'] * 1e4, '億': tok['x'] * 1e8}.get(tok['unit'], tok['x'])
+
+            def tiebreak(h):
+                v, fu, s, l, base = h
+                head = l.split('［')[0]
+                p_ok = (want_p in head) if want_p else not re.search(r'上月同期|目標|佔區|上週', head)
+                rate_ok = tok['unit'] not in ('%', '％') or '率' in head
+                tt = tok['x'] if fu == 'pct' else t
+                return (s == want_s, p_ok, rate_ok, -abs(v - tt) / max(abs(tt), 1e-9))
+            hits.sort(key=lambda h: (fit(h), tiebreak(h)), reverse=True)
             best = hits[0]
+            if fit(best)[0]:
+                store = best[2]                   # 上下文欄顯示實際對到的門市（沒講店名＝全區）
             if fit(best)[0]:
                 status, why = '✅', best[3]
             else:
