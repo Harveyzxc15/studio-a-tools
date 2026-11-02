@@ -22,6 +22,7 @@ import calendar
 import email
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -337,7 +338,7 @@ def summary_table(wb, people, off, traffic):
     for r in wb['sac'].iter_rows(min_row=2, values_only=True):
         if r[0] in (1, 2, 3):
             sacJ[r[0]] += (r[3] or 0) * price.get(r[1], 0)
-    sacK = {i: round(sacJ[i] * 0.5) for i in (1, 2, 3)}
+    sacK = {i: math.floor(sacJ[i] * 0.5 + 0.5) for i in (1, 2, 3)}   # Excel ROUND 是四捨五入；Python round() .5 會捨到偶數
     ttl = {}
     for r in wb['ttl'].iter_rows(min_row=2, values_only=True):
         if r[1] in (1, 2, 3):
@@ -380,7 +381,7 @@ def summary_table(wb, people, off, traffic):
         a[35] = v(i, 'air_TQTY')
         a[36] = v(i, 'ACPP_ACC') + v(i, 'SAC_air')
         denom = people if i == 1 else people + off
-        a[38] = round(a[8] / denom) if denom else None      # 人數 0（班表抓不到）時留空，不讓整份中斷
+        a[38] = math.floor(a[8] / denom + 0.5) if denom else None      # 人數 0（班表抓不到）時留空，不讓整份中斷
         a[39] = traffic[i]
         a[40] = cnt.get(i, 0)
         a[41] = a[40] / a[39] if a[39] else 0
@@ -542,14 +543,16 @@ def repair(P):
     periods = rr.calc_periods(P.wk_end)
     res = rr.parse_results(rr.run_epb(rr.build_sql(periods)), periods)
     # 圖表：去年 1 月起每月 ＋ 本月按週（月初~第一個週六為 W1）
+    # 週六剛好是月底（整月版週報，例如 W05 10/25~10/31）：當月畫成整月一根，不分週（比照 W01 9 月版）
+    month_end = P.wk_end.day == calendar.monthrange(P.wk_end.year, P.wk_end.month)[1]
     months = []
     y, mth = P.wk_end.year - 1, 1
-    while (y, mth) < (P.wk_end.year, P.wk_end.month):
+    while (y, mth) < (P.wk_end.year, P.wk_end.month) or (month_end and (y, mth) == (P.wk_end.year, P.wk_end.month)):
         last = calendar.monthrange(y, mth)[1]
         months.append((f'{mth}月', date(y, mth, 1), date(y, mth, last)))
         y, mth = (y, mth + 1) if mth < 12 else (y + 1, 1)
     weeks, s, k = [], P.m_start, 1
-    while s <= P.wk_end:
+    while s <= P.wk_end and not month_end:
         e = min(s + timedelta(days=(5 - s.weekday()) % 7), P.wk_end)
         weeks.append((f'W{k}', s, e))
         s, k = e + timedelta(days=1), k + 1
@@ -971,7 +974,7 @@ def build_ops(P, D, data, chart_files):
     # ── CSAT（手填：黃底，保留上週文字當格式參考） ──
     for s, t in D.tables(lambda t, s: '店點狀況' in cell(t, 0, 1)):
         for r in range(1, t['rows']):
-            if '滿意度' in cell(t, r, 0):
+            if '滿意度' in cell(t, r, 0) or cell(t, r, 0) == '維修':     # 北二區（Yuni 範本）列名是「維修」
                 ops.set(s, t, r, 1, None, bg=YELLOW)
                 ops.set(s, t, r, 2, None, bg=YELLOW)
     return ops
