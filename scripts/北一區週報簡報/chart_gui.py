@@ -117,6 +117,32 @@ def _copy_all(ox, oy):
     return [ln.split('\t') for ln in (_clip_get() or '').strip('\n').split('\n')]
 
 
+def screen_locked():
+    """螢幕鎖定（或登入畫面）時模擬點擊無效。解鎖狀態 ioreg 不會有 CGSSessionScreenIsLocked 這個鍵。"""
+    import plistlib
+    out = subprocess.run(['ioreg', '-n', 'Root', '-d1', '-a'], capture_output=True, timeout=30).stdout
+    users = plistlib.loads(out).get('IOConsoleUsers', [])
+    return any(u.get('CGSSessionScreenIsLocked') or not u.get('kCGSSessionOnConsoleKey') for u in users)
+
+
+def preflight(wait=180):
+    """開始操作畫面前的檢查；有問題回傳原因（字串），沒問題回 None。螢幕鎖定時最多等 wait 秒讓使用者解鎖。"""
+    for i in range(0, wait + 1, 10):
+        if not screen_locked():
+            break
+        if i == 0:
+            print('螢幕鎖定中，等候解鎖後再更新維修圖表（最多 3 分鐘）…', flush=True)
+        time.sleep(10)
+    else:
+        return '螢幕鎖定中'
+    try:
+        if _as('tell application "System Events" to return UI elements enabled') != 'true':
+            return '系統設定 › 隱私權 › 輔助使用 沒有開放給執行程式（Claude／終端機）'
+    except ChartGuiError as e:
+        return f'無法控制 System Events（{str(e)[:60]}）'
+    return None
+
+
 def update_chart(doc_name, slide_no, labels, rows):
     """doc_name：Keynote 文件名稱；slide_no：第幾頁（1 起算，含略過頁）；
     labels：類別（x 軸）；rows：每個數列的數值 list，順序同原圖表（數列名稱沿用原圖表）。"""

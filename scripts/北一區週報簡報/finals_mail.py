@@ -55,6 +55,8 @@ def fetch_finals():
             latest[f'{mt[1]}Q{mt[2]}W{int(mt[3]):02d}'] = rid       # 依收信時間排序，後面的蓋掉前面的
     got = {}
     for label, rid in latest.items():
+        if label < cfg.get('since', ''):
+            continue
         f = out_dir / f"{b.R['deck_prefix']} {label}.key"
         if not f.exists():
             data = _key_attachment(rid)

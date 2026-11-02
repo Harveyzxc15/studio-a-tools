@@ -60,7 +60,12 @@ REGIONS = {
         repair={'士林維修': '110', '羅東維修': '121'},
         headcount='schedule',
         mysetup={'士林': '士林', '微風': '微風', '美麗華': '美麗華', '阿波羅': '阿波羅', '高島屋': '高島屋'},
-        examples=HERE / '評語範例', learn_log=HERE / '評語修改紀錄.md'),
+        examples=HERE / '評語範例', learn_log=HERE / '評語修改紀錄.md',
+        # 使用者每週三寄出的定稿（含開會前在別台電腦手改的內容）：有就優先當範本與評語定稿；
+        # 還沒寄（strict=False）時照舊用桌面上自己的簡報，學習也照舊
+        final_mail=dict(sender='Bob.Yu@studioa.com.tw', subject=r'北一區 ?(\d\d)Q(\d)W(\d+) 週報', strict=False,
+                        since='27Q1W04'),        # 更早的不抓（範本只用最近一週）
+        final_dir=Path.home() / '工具中心' / '輸出' / '北一區週報簡報' / '定稿信件'),
     '北二區': dict(
         gen_dir=Path.home() / 'Desktop' / 'north2-weekly-report',
         deck_dir=Path.home() / 'Desktop' / '週報' / '北二區', deck_prefix='北二區週報',
@@ -611,6 +616,9 @@ def update_native_charts(deck, jobs, work):
     import chart_gui
     log(f'維修圖表：更新原生圖表資料（{len(jobs)} 張，會操作 Keynote 畫面，請勿動鍵盤滑鼠）…')
     try:
+        why = chart_gui.preflight()
+        if why:
+            raise chart_gui.ChartGuiError(f'{why}，沒有操作畫面')
         name = kn('open', deck).strip()
         for j in jobs:
             chart_gui.update_chart(name, j['slide'], j['labels'], j['rows'])
@@ -655,7 +663,7 @@ def find_template(P):
                 best = (key, f)
     if not best:
         raise SystemExit(f"❌ {DECK_DIR} 找不到上一週的「{R['deck_prefix']} XXQ#W##.key」當範本")
-    if R.get('final_mail') and best[1].parent != R['final_dir']:
+    if R.get('final_mail', {}).get('strict', True) and best[1].parent != R['final_dir']:
         warn(f'還沒收到報告人寄出的 {best[1].stem} 定稿信，範本用自己上週的簡報，本週不學評語寫法')
     return best[1]
 
@@ -810,6 +818,19 @@ def check_formula_sources(D, ops):
             what = (c and cell(t, r, c - 1)) or cell(t, r, 0) or cell(t, 0, c)    # 格子名稱：左邊的標籤優先
             warn(f"第 {s['i'] + 1} 頁「{what}」是公式 {fm}，引用的「{t2['name']}」本次沒有更新，"
                  f"數字可能停在上週，請檢查")
+
+
+def verify_and_report(P, dump, work, ops=None):
+    """交件前核對做完的簡報（見 verify_deck.py），結果寫 簡報核對.md；有 ❌ 列入 warnings。回傳 ❌ 的訊息。"""
+    import verify_deck
+    res = verify_deck.verify(dump, P, ops, P.label)
+    (work / '簡報核對.md').write_text(verify_deck.report(res, f'{REGION}週報 {P.full} 簡報核對'), encoding='utf-8')
+    bad = [m for ok, m in res if not ok]
+    for m in bad:
+        warn('❌ 簡報核對：' + m)
+    if not bad:
+        log(f'簡報核對：沒有 ❌（{work / "簡報核對.md"}）')
+    return bad
 
 
 def build_ops(P, D, data, chart_files):
@@ -1098,7 +1119,7 @@ def learn_from_last_week(tmpl, D):
     if not m or not final:                       # 範本不是標準檔名（例如測試）就不學
         return
     prev_full = m[1]
-    if R.get('final_mail') and tmpl.parent != R['final_dir']:     # 只有報告人寄回的定稿才算定稿
+    if R.get('final_mail', {}).get('strict', True) and tmpl.parent != R['final_dir']:   # 北二：只有報告人寄回的定稿才算定稿
         return
     R['examples'].mkdir(parents=True, exist_ok=True)
     ex = R['examples'] / f"{R['deck_prefix']} {prev_full}.txt"
@@ -1216,6 +1237,7 @@ def main():
     log(f'寫入 Keynote（{len(ops)} 個操作）…')
     kn('apply', tmp_deck, work / 'ops.json')
     update_native_charts(tmp_deck, data['chart_jobs'], work)
+    check = verify_and_report(P, json.loads(kn('dump', tmp_deck)), work, ops)
     shutil.move(tmp_deck, target)
 
     if not a.out_dir:
@@ -1226,7 +1248,7 @@ def main():
     if R['headcount'] != 'schedule' or R.get('headcount_fallback'):
         manual.insert(0, '業績總表「本週銷售人數」（暫填本週有銷售的人數）')
     state = {'region': REGION, 'label': P.full, 'deck': str(target), 'material': str(mat), 'xlsx': str(xlsx),
-             'stores': NAMES, 'warnings': WARN, 'manual': manual}
+             'stores': NAMES, 'warnings': WARN, 'manual': manual, 'check': check}
     (work / 'state.json').write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding='utf-8')
     log(f'✅ 簡報數字完成：{target}')
     log(f'   評語素材：{mat}')
