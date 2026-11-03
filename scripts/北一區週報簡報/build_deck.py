@@ -1209,6 +1209,11 @@ def main():
     data['summary'] = summary_table(dwb, *data['people'],
                                     {1: X['traffic_week'], 2: X['traffic_mtd'], 3: X['traffic_pm_same']})
     log('3PP 重建（本週、上週）…')
+    # 沒給 --3pp 時，用每週一 13:00 排程（3PP搭售率_推雲端.py）存好的本週 DSS 檔
+    auto = Path.home() / '工具中心' / '輸出' / 'DSS3PP' / '週報用' / \
+        f'3PP_aggregate_rptD_{REGION}_{P.wk_start:%Y%m%d}-{P.wk_end:%Y%m%d}.xlsx'
+    if not a.tpp and auto.exists():
+        a.tpp = str(auto)
     if a.tpp:
         log(f'本週 3PP 用 DSS 匯出檔：{Path(a.tpp).name}')
         data['3pp_week'] = threepp_dss(a.tpp)
