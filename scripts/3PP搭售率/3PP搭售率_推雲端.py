@@ -8,12 +8,13 @@
   已結束超過 14 天的期間存在快取不再重撈（DSS 銷退會回頭改數字，近兩週每次重撈）
 
 用法：python3 3PP搭售率_推雲端.py            # 撈缺的期間＋推
+      python3 3PP搭售率_推雲端.py --weekly   # 排程用（每週一 13:00）：session 過期就跳通知＋開 DSS 登入視窗，登入後接著推
       python3 3PP搭售率_推雲端.py --dry-run  # 只撈不推
       HUB_URL=http://127.0.0.1:5050 python3 3PP搭售率_推雲端.py
 ⚠️ DSS 登入要圖形驗證碼＋email 驗證碼，session 過期先跑：python3 ../dss_3pp_export.py --login
 Token：EPB_PUSH_TOKEN 或 ~/.config/studioa/epb_push_token（與 EPB 實績推送共用）
 """
-import json, os, ssl, sys, urllib.request
+import json, os, ssl, subprocess, sys, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
@@ -84,7 +85,32 @@ def pull(start, end):
     return rows
 
 
+def notify(msg):
+    subprocess.run(['osascript', '-e', f'display notification "{msg}" with title "3PP 搭售率" sound name "Glass"'])
+
+
 def main():
+    if '--weekly' not in sys.argv:
+        return run()
+    try:
+        run()
+    except SystemExit as e:
+        if 'session' not in str(e):
+            notify('更新失敗，看 ~/Library/Logs/attach3pp.log')
+            raise
+        # DSS 登入要圖形驗證碼＋email 驗證碼，只能請使用者自己登入（10 分鐘內）
+        notify('DSS 登入過期了，請在跳出的視窗登入，登入後會自動更新')
+        from dss_3pp_export import login
+        try:
+            login()
+        except Exception:
+            notify('10 分鐘內沒有登入，這週沒更新；之後手動跑 3PP搭售率_推雲端.py')
+            raise
+        run()
+    notify('已更新 sa-north-hub 的 3PP 搭售率')
+
+
+def run():
     today = date.today()
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     plist = periods(today)
