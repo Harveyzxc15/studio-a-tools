@@ -269,7 +269,11 @@ def build(days, use_claude):
     if use_claude and need:
         print(f'送 Claude 判讀 {len(need)} 封…')
         for i in range(0, len(need), 12):
-            got = ask_claude(need[i:i + 12])
+            batch = need[i:i + 12]
+            got = ask_claude(batch)
+            if got:   # 這批有正常回來，但漏判的信記成空結果，免得每次排程都重送、一直耗額度
+                for m in batch:
+                    got.setdefault(str(m['id']), {'id': m['id']})
             cache.update(got)
             CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=1))
     for m in keep:
@@ -391,7 +395,9 @@ def remind(items):
     msgs.append(cur)
     hook = DISCORD_HOOK.read_text().strip()
     for m in msgs:
-        req = urllib.request.Request(hook, data=json.dumps({'content': m.strip()}).encode(),
+        # allowed_mentions 空：主旨裡就算有 @everyone／@here 也不會通知全頻道
+        req = urllib.request.Request(hook, data=json.dumps({'content': m.strip(),
+                                                            'allowed_mentions': {'parse': []}}).encode(),
                                      headers={'Content-Type': 'application/json',
                                               'User-Agent': 'DiscordBot (studioa-mail-digest, 1.0)'})
         urllib.request.urlopen(req, timeout=30).close()
@@ -416,13 +422,28 @@ def main():
     for it in snap['items']:
         kinds[it['kind']] = kinds.get(it['kind'], 0) + 1
     print(f"信件 {snap['n_mails']} 封 → {len(snap['items'])} 個主題 {kinds}")
+    # 各步驟互不牽連：hub 掛掉不該擋行事曆，行事曆卡住也不該擋推送；最後有錯再以非 0 結束
+    failed = []
+
+    def step(name, fn):
+        try:
+            fn()
+        except Exception as e:
+            failed.append(name)
+            print(f'  {name}失敗：{type(e).__name__} {e}', file=sys.stderr)
+
     if a.push:
-        print('推送：', push(snap))
+        step('推送', lambda: print('推送：', push(snap)))
     if a.sop:
-        sop = sop_snapshot()
-        print('SOP／活動', len(sop['items']), '個主題', '→ 推送：' + str(push(sop, '/api/sop/snapshot')) if a.push else '')
+        def do_sop():
+            sop = sop_snapshot()
+            print('SOP／活動', len(sop['items']), '個主題',
+                  '→ 推送：' + str(push(sop, '/api/sop/snapshot')) if a.push else '')
+        step('SOP', do_sop)
     if a.calendar:
-        print('行事曆新增', sync_calendar(snap['items']), '筆')
+        step('行事曆', lambda: print('行事曆新增', sync_calendar(snap['items']), '筆'))
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

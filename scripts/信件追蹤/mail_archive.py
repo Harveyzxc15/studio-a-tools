@@ -84,7 +84,7 @@ def save(raw, received, src, sender=None, sender_name=None, subject=None):
                 if 0 < len(data) <= MAX_ATT:
                     d = ATT / key
                     d.mkdir(parents=True, exist_ok=True)
-                    safe = re.sub(r'[/\\:]', '_', fn)
+                    safe = re.sub(r'[/\\:\x00]', '_', fn).strip().lstrip('.') or 'attachment'
                     (d / safe).write_bytes(data)
                     kept.append(safe)
             continue
@@ -141,7 +141,7 @@ def from_imap():
     M.starttls(ssl_context=ctx)
     M.login(env['work_USER'], env['work_PASSWORD'])
     n = int(M.select('INBOX', readonly=True)[1][0])
-    new = seen = 0
+    new = seen = failed = 0
     oldest = None
     if n:
         typ, data = M.fetch(f'1:{n}', '(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID DATE FROM SUBJECT)])')
@@ -156,9 +156,14 @@ def from_imap():
             if (MSGS / f'{key}.json').exists():
                 seen += 1
                 continue
-            typ, full = M.uid('FETCH', uid, '(BODY.PEEK[])')
-            raw = next(x[1] for x in full if isinstance(x, tuple))
-            new += save(raw, received, 'imap')
+            # 單封解析失敗不能中斷整輪：那封沒存，下一小時又重試又中斷，備份就永遠卡住
+            try:
+                typ, full = M.uid('FETCH', uid, '(BODY.PEEK[])')
+                raw = next(x[1] for x in full if isinstance(x, tuple))
+                new += save(raw, received, 'imap')
+            except Exception as e:
+                failed += 1
+                print('  存信失敗', uid, type(e).__name__, e, file=sys.stderr)
     M.logout()
 
     st = _state()
@@ -172,7 +177,7 @@ def from_imap():
         _notify(f'可能漏信 {gap}，請在 MacBook 跑 --apple 補')
     st['last_imap'] = datetime.now().isoformat(timespec='seconds')
     _write_state(st)
-    print(f'IMAP 收件匣 {n} 封：新存 {new}、已有 {seen}')
+    print(f'IMAP 收件匣 {n} 封：新存 {new}、已有 {seen}' + (f'、失敗 {failed}' if failed else ''))
 
 
 # ---------- Apple Mail（只在這台 MacBook） ----------
