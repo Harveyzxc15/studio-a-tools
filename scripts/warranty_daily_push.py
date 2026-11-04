@@ -155,11 +155,36 @@ def screenshot(page, w, h, png):
                            capture_output=True, text=True, timeout=120)
         m = re.search(r'data-h="(\d+)"', r.stdout)
         h = max(h, int(m.group(1))) if m else h + 200
-        r = subprocess.run(base + ['--force-device-scale-factor=2', f'--window-size={w},{h}',
+        # 視窗多留 200px 再裁回表格大小：mini 上 Chrome 實際可視高度偶爾比 window-size 小，底部會被切掉、補上重複內容
+        r = subprocess.run(base + ['--force-device-scale-factor=2', f'--window-size={w},{h + 200}',
                                    f'--screenshot={png}', src.as_uri()],
                            capture_output=True, text=True, timeout=120)
         if not Path(png).exists():
             raise RuntimeError(f'Chrome 截圖失敗：{r.stderr[-500:]}')
+        crop_png_top(png, h * 2)
+
+def crop_png_top(png, height):
+    """只留 PNG 最上面 height 列（sips 的 --cropOffset 無效、一律從中間裁，不能用）。
+    PNG 每列的濾波只參考上一列，所以截掉下面的列不用重新編碼像素。"""
+    import struct, zlib
+    data = Path(png).read_bytes()
+    pos, chunks = 8, []
+    while pos < len(data):
+        n, = struct.unpack('>I', data[pos:pos + 4])
+        chunks.append((data[pos + 4:pos + 8], data[pos + 8:pos + 8 + n]))
+        pos += 12 + n
+    ihdr = chunks[0][1]
+    w, h, depth, ctype, _, _, interlace = struct.unpack('>IIBBBBB', ihdr)
+    if interlace or depth != 8 or h <= height:
+        return
+    row = 1 + w * {2: 3, 6: 4, 0: 1, 4: 2}[ctype]
+    raw = zlib.decompress(b''.join(d for t, d in chunks if t == b'IDAT'))[:row * height]
+    def chunk(t, d):
+        return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+    out = data[:8] + chunk(b'IHDR', struct.pack('>II', w, height) + ihdr[8:])
+    out += b''.join(chunk(t, d) for t, d in chunks[1:] if t not in (b'IDAT', b'IEND'))
+    out += chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b'')
+    Path(png).write_bytes(out)
 
 def post_discord(content, pngs):
     url = WEBHOOK.read_text().strip()
@@ -219,8 +244,11 @@ def main():
     if dry:
         print('（--dry：不推 Discord）')
         return
-    content = '\n'.join([f'📊 每日追蹤主機 保固搭售率　區間 {period}（北一區／北二區）', *warns])
-    post_discord(content, pngs)
+    # 一則訊息一張圖：同一則附兩張，Discord 會排成拼貼並把圖裁成方形縮圖
+    for name, png in zip(SHEETS, pngs):
+        region = name[:2] + '區'
+        content = '\n'.join([f'📊 每日追蹤主機 保固搭售率　{region}　區間 {period}', *(warns if region == '北一區' else [])])
+        post_discord(content, [png])
     print('✅ 已推 Discord')
 
 if __name__ == '__main__':
