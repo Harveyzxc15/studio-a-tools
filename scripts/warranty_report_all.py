@@ -14,6 +14,7 @@
 用法：
   python3 warranty_report_all.py            # 自動：最近完整週（週日～週六）
   python3 warranty_report_all.py --this-week  # 本週：昨日所在週的週日～昨日
+  （任何用法加 --no-open：跑完不開 Excel，給排程用）
   python3 warranty_report_all.py 5/31 6/4   # 指定起迄日（同年）
   python3 warranty_report_all.py 2026-05-31 2026-06-04
 """
@@ -31,8 +32,10 @@ from openpyxl.formatting.rule import FormulaRule
 import os
 # ── 連線/路徑設定（硬編碼，與 保固搭售率/warranty_report.py 一致）──
 JAVA        = "/Library/Java/JavaVirtualMachines/jdk1.8.0_251.jdk/Contents/Home/bin/java"
-EPB_CP      = os.path.expanduser("~/Desktop/north1-weekly-report:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*")
-EPB_CWD     = os.path.expanduser("~/Desktop/north1-weekly-report")
+# 用 ~/工具中心/lib 的橋接（第一個參數是 EPB 根目錄）：launchd 讀不到 ~/Desktop（TCC），Mac mini 排程才跑得動
+EPB_CP      = os.path.expanduser("~/工具中心/lib:/Library/EPBrowser/EPB/Shell/shell.jar:/Library/EPBrowser/EPB/Shell/lib/*")
+EPB_CWD     = os.path.expanduser("~/工具中心/lib")
+EPB_PRE_ARGS = ['/Library/EPBrowser']
 MAIL_BASE   = Path("~/Library/Mail/V10").expanduser()
 OUTPUT_BASE = Path("~/工具中心/輸出/每日追蹤主機").expanduser()
 
@@ -105,7 +108,7 @@ def fmt(d):
 def epb(sql, max_rows=10000):
     r = subprocess.run(
         [JAVA, '-Dsun.net.client.defaultReadTimeout=120000',
-         '-cp', EPB_CP, 'EPBReportQuery', sql, str(max_rows)],
+         '-cp', EPB_CP, 'EPBReportQuery', *EPB_PRE_ARGS, sql, str(max_rows)],
         capture_output=True, text=True, cwd=EPB_CWD
     )
     lines = [l for l in r.stdout.strip().split('\n') if l.strip()]
@@ -289,6 +292,7 @@ def _save_cache(cache):
         pass
 
 MYSETUP_SENDER = 'guestbook_support@group.apple.com'
+MAIL_ARCHIVE   = Path('~/工具中心/scripts/信件追蹤/archive').expanduser()   # mail-digest 信件備份（沒有就略過）
 
 def _mysetup_mail_paths(lo_date):
     """回傳 Personal Setup 信的 emlx 路徑（依收信時間排序）。
@@ -340,6 +344,40 @@ def _mysetup_xlsx_blobs(msg, path):
             with open(f, 'rb') as fh:
                 yield fh.read()
 
+def _mysetup_candidates(lo_date):
+    """依序產生 (主旨, xlsx 附件 bytes 產生器)：先 Apple Mail，再 mail-digest 的信件備份。
+    launchd 背景讀不到 ~/Library/Mail（TCC），Mac mini 排程靠信件備份（mail_archive.py 每小時存 IMAP）。"""
+    for path in _mysetup_mail_paths(lo_date):
+        try:
+            # 快速預篩：先讀檔頭，原始 bytes 不含關鍵字就跳過（省下對數千封非候選信的 MIME parse）
+            # 用寄件者過濾（中文標題會被 MIME 編碼，raw bytes 找不到 'Setup Data'）
+            with open(path, 'rb') as f:
+                raw = f.read(32768)
+                if MYSETUP_SENDER.encode() not in raw:
+                    continue
+                raw += f.read()  # 候選信才補讀完整內容（attachment 需要）
+            if b'\n' not in raw: continue
+            msg = _parse_emlx(raw)
+        except Exception:
+            continue
+        yield _decode_mail_str(msg.get('Subject', '')), _mysetup_xlsx_blobs(msg, path)
+    lo = (lo_date - timedelta(days=1)).isoformat()
+    recs = []
+    for f in glob.glob(str(MAIL_ARCHIVE / 'msgs' / '*.json')):
+        try:
+            with open(f, 'rb') as fh:
+                raw = fh.read()
+            if MYSETUP_SENDER.encode() not in raw:
+                continue
+            rec = json.loads(raw)
+            if rec.get('sender') == MYSETUP_SENDER and rec.get('received', '') >= lo:
+                recs.append(rec)
+        except Exception:
+            continue
+    for rec in sorted(recs, key=lambda r: r['received']):   # 同 Apple Mail：依收信時間，先到的那封優先
+        att = MAIL_ARCHIVE / '附件' / rec['key']
+        yield rec.get('subject', ''), (p.read_bytes() for p in sorted(att.glob('*.xlsx')))
+
 def scan_mysetup(kw_map, lo_date, hi_date):
     """掃 Apple Mail 抓 Personal Setup 提交數，一次涵蓋 lo~hi 的所有 setup 日期。
     回傳 {date_iso: {store: count}}，由 mysetup_sum() 推導各期間（避免重複掃描）。
@@ -354,18 +392,8 @@ def scan_mysetup(kw_map, lo_date, hi_date):
 
     by_date = {}
     seen_dates = set()
-    for path in _mysetup_mail_paths(lo_date):
+    for subj, blobs in _mysetup_candidates(lo_date):
         try:
-            # 快速預篩：先讀檔頭，原始 bytes 不含關鍵字就跳過（省下對數千封非候選信的 MIME parse）
-            # 用寄件者過濾（中文標題會被 MIME 編碼，raw bytes 找不到 'Setup Data'）
-            with open(path, 'rb') as f:
-                raw = f.read(32768)
-                if MYSETUP_SENDER.encode() not in raw:
-                    continue
-                raw += f.read()  # 候選信才補讀完整內容（attachment 需要）
-            if b'\n' not in raw: continue
-            msg = _parse_emlx(raw)
-            subj = _decode_mail_str(msg.get('Subject', ''))
             # 2026-06-29 起 Apple 改中文標題：Personal Setup ：数据 29-6月-26 - 29-6月-26
             if 'Personal Setup' not in subj: continue
             if 'Setup Data' not in subj and '数据' not in subj and '數據' not in subj: continue
@@ -382,7 +410,7 @@ def scan_mysetup(kw_map, lo_date, hi_date):
                 continue
             counts = defaultdict(int)
             found = False
-            for raw_xls in _mysetup_xlsx_blobs(msg, path):
+            for raw_xls in blobs:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
                     mwb = load_workbook(io.BytesIO(raw_xls), read_only=True, data_only=True)
@@ -662,6 +690,9 @@ def render_progress(done, total, label=''):
 # ── 主程式 ────────────────────────────────────────────────────────────────────
 def main():
     t0 = time.time()
+    no_open = '--no-open' in sys.argv   # 排程用：不開 Excel 視窗
+    if no_open:
+        sys.argv.remove('--no-open')
     if len(sys.argv) == 2 and sys.argv[1] == '--this-week':
         d_end   = date.today() - timedelta(days=1)
         d_start = d_end - timedelta(days=(d_end.weekday() + 1) % 7)
@@ -758,7 +789,9 @@ def main():
     out_path = out_dir / fname
     wb.save(out_path)
     print(f"✅ 完成（耗時 {time.time() - t0:.0f} 秒）：{out_path}")
-    subprocess.run(['open', str(out_path)])
+    if not no_open:
+        subprocess.run(['open', str(out_path)])
+    return out_path
 
 if __name__ == '__main__':
     main()
