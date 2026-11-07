@@ -186,6 +186,22 @@ HOST_CAT4 = {'4001': 'mac', '4002': 'mac', '4004': 'iphone', '4005': 'ipad', '40
 ACPP_KW = {'mac': ('macbook', 'mac mini', 'imac', 'mac studio'), 'iphone': ('iphone',), 'ipad': ('ipad',),
            'watch': ('watch',), 'airpods': ('airpods',)}
 NEW_DAYS = 7          # 第一次有銷售在近幾天內才算新品
+NEW_MIN_UNITS = 2     # 首賣以來 13 店合計至少幾台才算（排除半年沒賣、剛好賣出 1 台的冷門機型）
+
+
+def model_label(names):
+    """EPB 品名 → 口語機型名（iPad mini、MacBook Pro 14…）；認不出就回 None。"""
+    n = ' '.join(names).upper()
+    for pat, lab in ((r'IPAD MINI', 'iPad mini'), (r'IPAD AIR', 'iPad Air'), (r'IPAD PRO', 'iPad Pro'),
+                     (r'\bIPAD\b', 'iPad'), (r'MAC MINI', 'Mac mini'), (r'MAC STUDIO', 'Mac Studio'), (r'IMAC', 'iMac'),
+                     (r'\bMBP\b|MACBOOK PRO', 'MacBook Pro'), (r'\bMBA\b|MACBOOK AIR', 'MacBook Air'),
+                     (r'IPHONE', 'iPhone'), (r'WATCH', 'Apple Watch'), (r'AIRPODS', 'AirPods')):
+        if re.search(pat, n):
+            size = re.search(r'(?:MBP|MBA|MACBOOK PRO|MACBOOK AIR|IPAD PRO|IPAD AIR)(?: PXD)? (1[1-6])\b', n)
+            chip = re.search(r'/(M\d(?: PRO| MAX)?)/', n)
+            return ' '.join(x for x in (lab, size.group(1) if size and 'Mac' in lab else None,
+                                        chip.group(1).title().replace('Pro', 'Pro') if chip and 'Mac' in lab else None) if x)
+    return None
 
 
 def _epb_rows(sql):
@@ -263,7 +279,7 @@ def focus_facts(day):
     cat4s = ','.join(f"'{c}'" for c in HOST_CAT4)
     first = {}
     for r in _epb_rows(f"SELECT l.cat6_id, MIN(l.doc_date) f FROM poslinev_bi l WHERE {_base_cond(look0, d)} "
-                       f"AND l.cat4_id IN ({cat4s}) AND l.stk_qty>0 GROUP BY l.cat6_id"):
+                       f"AND l.cat4_id IN ({cat4s}) AND l.cat3_id IN ('3001','3002') AND l.stk_qty>0 GROUP BY l.cat6_id"):
         f0 = dt.date.fromisoformat(r['F'][:10])
         if f0 > d - dt.timedelta(days=NEW_DAYS):
             first[r['CAT6_ID'].strip()] = f0
@@ -275,19 +291,29 @@ def focus_facts(day):
         cat = next((HOST_CAT4.get(x['CAT4_ID'].strip()) for x in rows if x['CAT6_ID'].strip() == c6), None)
         names = sorted({x['NAME'] for x in rows if x['CAT6_ID'].strip() == c6})
         units, today, acpp = ({r: {} for r in DF.STORES} for _ in range(3))
+        per_doc = {}                                  # 單號 → [門市, 新品台數, 同單 AC+, 是否今天]
         for x in rows:
             sh = _shop(x)
             if not sh:
                 continue
             q = int(float(x['STK_QTY'] or 0))
+            dd = per_doc.setdefault(x['DOC_ID'], [sh, 0, 0, x['DOC_DATE'][:10] == f'{d:%Y-%m-%d}'])
             if x['CAT6_ID'].strip() == c6:
-                units[sh[0]][sh[1]] = units[sh[0]].get(sh[1], 0) + q
-                if x['DOC_DATE'][:10] == f'{d:%Y-%m-%d}':
-                    today[sh[0]][sh[1]] = today[sh[0]].get(sh[1], 0) + q
+                dd[1] += q
             elif x['CAT3_ID'].strip() == '3032' and cat and any(k in x['NAME'].lower() for k in ACPP_KW[cat]):
-                acpp[sh[0]][sh[1]] = acpp[sh[0]].get(sh[1], 0) + q
+                dd[2] += q
+        for sh, n_new, n_ac, is_today in per_doc.values():
+            units[sh[0]][sh[1]] = units[sh[0]].get(sh[1], 0) + n_new
+            if is_today:
+                today[sh[0]][sh[1]] = today[sh[0]].get(sh[1], 0) + n_new
+            # 同單還買了別台同品類主機時，AC+ 不能全算給新品：最多算到新品台數
+            # 銷退單（新品 −1、AC+ −1）照原數扣
+            add = min(n_ac, n_new) if n_new > 0 and n_ac > 0 else n_ac
+            acpp[sh[0]][sh[1]] = acpp[sh[0]].get(sh[1], 0) + add
+        if sum(v for r in units.values() for v in r.values()) < NEW_MIN_UNITS:
+            continue
         mt = (cfg.get('model_targets') or {}).get(c6, {})
-        label = mt.get('name') or f'新品 cat6 {c6}'
+        label = mt.get('name') or model_label(names) or f'新品 cat6 {c6}'
         src_q = f'EPB poslinev_bi cat6 {c6} {f0:%m/%d}～{d:%m/%d}（A/E/H，排認證機；AC+＝同單 cat3 3032 {cat}）'
         for region in DF.STORES:
             facts, lines = out[region]

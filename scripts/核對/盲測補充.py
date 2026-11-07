@@ -89,8 +89,9 @@ def store_notes(day):
 
 
 # ---------------------------------------------------------------- 2./命中率 實寄對比
+# 只放「主題」字；本週、首賣、新品這類通用字不算（不然「本週 iPhone」會對上「本週 Watch」）
 TOPIC_KW = re.compile(r'iPad mini|AirPods 4|Mac mini|MacBook|iPhone|iPad|CPU|Mac|Watch|AirPods|3PP|喇叭|ARpedia|Duo|'
-                      r'週對週|本週|前週|營業額|重點項目|新品|首賣|開賣|MyCoach|稽核|失竊|面試|客訴|月份')
+                      r'週對週|營業額|重點項目|MyCoach|稽核|失竊|面試|客訴|月份')
 
 
 def _kws(t):
@@ -152,12 +153,15 @@ def compare_day(prev, sent):
             'best': best['id'], 'topic': best['topic'], 'sim': round(sim, 3), 'tag': tag, 'hit': tag != '換了主題',
             'a_hit': tag != '換了主題' and best['id'] == 'A', 'n_opts': len(mine), 'sent_head': s[:60]}
         shown.append(f'{region[:2]} 最接近選項 {best["id"]}「{best["topic"]}」相似 {sim:.0%}（{tag}）')
-        head = f'### {prev} {region}（{WHO[region]}，選項 {best["id"]}「{best["topic"]}」{tag}）'
-        if tag != '換了主題' and head not in log:
+        key = f'### {prev} {region}（'
+        head = f'{key}{WHO[region]}，選項 {best["id"]}「{best["topic"]}」{tag}）'
+        if key in log:                                  # 同一天已記過（重跑、乾跑不重複記）
+            continue
+        if tag != '換了主題':
             rw = rewrites(best['text'], s)
             if rw:
                 log += f'\n{head}\n' + '\n'.join(rw) + '\n'
-        elif tag == '換了主題' and head not in log:
+        else:
             log += f'\n{head}\n- 實寄寫的是：「{s[:120]}…」（我的選項沒有這題）\n'
     HITS.parent.mkdir(parents=True, exist_ok=True)
     HITS.write_text(json.dumps(hits, ensure_ascii=False, indent=1, sort_keys=True), encoding='utf-8')
@@ -215,37 +219,43 @@ def bulk_orders(day, facts_by_region, epb, base_cond, shop_of, min_qty=10):
     d = _d(day)
     m0 = d.replace(day=1)
     cats = ','.join(f"'{c}'" for c in HOST_CAT)
-    big = epb(f"SELECT l.shop_id, l.doc_id, MAX(l.doc_date) dd, l.cat4_id, SUM(l.stk_qty) q FROM poslinev_bi l "
+    case = ("CASE WHEN l.cat4_id IN ('4001','4002') THEN 'CPU' WHEN l.cat4_id='4004' THEN 'iPhone' "
+            "WHEN l.cat4_id IN ('4005','4006','4041') THEN 'iPad' WHEN l.cat4_id='4038' THEN 'Watch' ELSE 'AirPods' END")
+    big = epb(f"SELECT l.shop_id, l.doc_id, MAX(l.doc_date) dd, {case} cat, SUM(l.stk_qty) q FROM poslinev_bi l "
               f"WHERE {base_cond(m0, d)} AND l.cat4_id IN ({cats}) AND l.cat3_id IN ('3001','3002') "
-              f"GROUP BY l.shop_id, l.doc_id, l.cat4_id HAVING SUM(l.stk_qty)>={min_qty}")
+              f"GROUP BY l.shop_id, l.doc_id, {case} HAVING SUM(l.stk_qty)>={min_qty}")
     out = {r: ([], []) for r in DF.STORES}
+    agg = {}                                    # (區, 店, 品類) → [台數, AC+]；店＝'' 是全區
     for b in big:
         sh = shop_of(b)
         if not sh:
             continue
         region, store = sh
-        cat, q = HOST_CAT[b['CAT4_ID'].strip()], int(float(b['Q']))
+        cat, q = b['CAT'].strip(), int(float(b['Q']))
         lines = epb(f"SELECT l.name, l.stk_qty FROM poslinev_bi l WHERE l.org_id='01' AND l.doc_id='{b['DOC_ID']}' "
                     f"AND l.cat3_id='3032'")
-        ac = sum(int(float(x['STK_QTY'])) for x in lines if any(k in x['NAME'].lower() for k in ACPP_KW[cat]))
+        ac = min(sum(int(float(x['STK_QTY'])) for x in lines if any(k in x['NAME'].lower() for k in ACPP_KW[cat])), q)
         facts, txt = out[region]
         src = f'EPB 單號 {b["DOC_ID"]}（同單 cat3 3032 {cat}）'
         facts += [fc.fact(q, 'cnt', store, f'{store} {cat} 大單台數 {b["DD"][5:10]}', src=src),
                   fc.fact(ac, 'cnt', store, f'{store} {cat} 大單同單 AC+ {b["DD"][5:10]}', src=src)]
-        line = f'- {store} {b["DD"][5:7]}/{b["DD"][8:10]} 單張單 {cat} {q} 台，同單 AC+ {ac} 套'
-        F = {(f['s'], f['l']): f['v'] for f in facts_by_region.get(region, [])}
+        txt.append(f'- {store} {b["DD"][5:7]}/{b["DD"][8:10]} 單張單 {cat} {q} 台，同單 AC+ {ac} 套')
         for who in (store, ''):
-            name = who or region
-            n_ = next((v for (s, l), v in F.items() if s.endswith(who) and (who or s == '') and
-                       l.endswith(f'{cat} 台數(排認證機) 月累')), None)
-            a_ = next((v for (s, l), v in F.items() if s.endswith(who) and (who or s == '') and
-                       l.endswith(f'{cat} ACPP+套數 月累')), None)
-            if n_ and a_ is not None and n_ - q > 0:
-                r = (a_ - ac) / (n_ - q)
-                facts.append(fc.fact(r, 'rate', who, f'{name} {cat} ACPP+搭售率 月累(扣除這張大單)',
-                                     src=f'({a_:.0f}−{ac})/({n_:.0f}−{q})'))
-                line += f'；扣除後{name} {cat} ACPP+ 搭售率 {r:.1%}'
-        txt.append(line)
+            t = agg.setdefault((region, who, cat), [0, 0])
+            t[0] += q
+            t[1] += ac
+    for (region, who, cat), (q, ac) in agg.items():
+        facts, txt = out[region]
+        name = who or region
+        F = {(f['s'], f['l']): f['v'] for f in facts_by_region.get(region, [])}
+        pick = lambda tail: next((v for (s, l), v in F.items()
+                                  if (s.endswith(who) if who else s == '') and l.endswith(tail)), None)
+        n_, a_ = pick(f'{cat} 台數(排認證機) 月累'), pick(f'{cat} ACPP+套數 月累')
+        if n_ and a_ is not None and n_ - q > 0:
+            r = (a_ - ac) / (n_ - q)
+            facts.append(fc.fact(r, 'rate', who, f'{name} {cat} ACPP+搭售率 月累(扣除大單)',
+                                 src=f'({a_:.0f}−{ac})/({n_:.0f}−{q})'))
+            txt.append(f'  → 扣除大單後 {name} {cat} ACPP+ 搭售率 {r:.1%}（原 {a_ / n_:.1%}）')
     return {r: (f, ('# 單張單大量訂單（月累期間同品類 ≥10 台；搭售率異常先看這裡，點名門市前用扣除後的數字）\n'
                     + '\n'.join(t)) if t else '') for r, (f, t) in out.items()}
 
@@ -267,10 +277,12 @@ def month_facts(day):
         facts, lines = [], [f'# 月初：{M}整月概況（{lm0:%m/%d}～{lm_end:%m/%d}；A 一定寫{M}整月概況）']
         raw, checks = DF.build(lm_end.strftime('%Y%m%d'), region)
         if any(c[0] == '❌' for c in checks):
+            out[region] = ([], f'# 月初：{M}整月概況查不到（{lm_end:%m/%d} 門市日報不齊：'
+                               f'{"；".join(c[2] for c in checks if c[0] == "❌")}），今天不寫整月概況')
             continue
         V = {}
         for f in raw:
-            p = f.get('p')
+            p = f.get('p') or ('達成率' if f['l'].endswith(' 達成率') else None)
             if p in ('月累', '目標', '達成率'):
                 newp = {'月累': f'{M}整月', '目標': f'{M}目標', '達成率': f'{M}達成率'}[p]
                 f = dict(f, l=f['l'].replace(f' {p}', f' {newp}'), p=newp,
@@ -283,6 +295,19 @@ def month_facts(day):
                 facts.append(dict(f, src=f'週報產生器引擎 {f["p"]}'))
         G = {(f['s'], f['l'].split(' ', 1)[1]): f['v'] for f in gen}
         stores = [''] + list(DF.STORES[region].values())
+        # 去年同月 3PP 用日報口徑（日報_推雲端 query_sell，跟 hub 日報頁的去年同期同一支；10 月北一 +11.2% 對上 Bob 11/1）
+        ly_tpp = {}
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(HERE.parent))
+            import 日報_推雲端 as R
+            sell = R.summarize(R.query_sell(ly0, ly1), ly0, ly1)
+            code_of = {v: k for k, v in DF.STORES[region].items()}
+            for s_ in stores:
+                locs = [code_of[s_]] if s_ else list(DF.STORES[region])
+                ly_tpp[s_] = sum(sell.get(c, {}).get('tpp', 0) for c in locs)
+        except Exception:
+            ly_tpp = {}
         rows = []
         for s in stores:
             name = s or region
@@ -301,20 +326,32 @@ def month_facts(day):
             if tot and tot_ly:
                 facts.append(fc.fact(tot / tot_ly - 1, 'rate', s, f'{name} 總營業額 較去年同月 {M}',
                                      src=f'產生器 {tot:,.0f}/{tot_ly:,.0f}−1'))
-                cell += f'／較去年同月 {tot / tot_ly - 1:+.1%}（產生器口徑，含禮券）'
+                cell += f'／較去年同月 {tot / tot_ly - 1:+.1%}（產生器口徑含禮券；⚠️ 跟 Bob／Yuni 寫的口徑還沒對上）'
             rows.append(cell)
         lines.append('【營業額】' + '；'.join(rows))
-        for k in ('3PP營業額', '3PP搭售率'):
-            lines.append(f'【{k}】' + '；'.join(
-                f'{s or region} {M} ' + ('/'.join(
-                    (f'{V[(s, f"{k} {p}")]:.2%}' if '率' in k else f'{V[(s, f"{k} {p}")]:,.0f}') if (s, f'{k} {p}') in V else '—'
-                    for p in (f'{M}整月', f'{M}目標', f'{M}達成率') if not ('率' in k and p == f'{M}達成率')))
-                for s in stores))
+        cells = []
+        for s_ in stores:
+            g = lambda k: V.get((s_, k))
+            amt, tgt_, ach = g(f'3PP營業額 {M}整月'), g(f'3PP營業額 {M}目標'), g(f'3PP營業額 {M}達成率')
+            rt, rt_t = g(f'3PP搭售率 {M}整月'), g(f'3PP搭售率 {M}目標')
+            if amt is None:
+                continue
+            ly3 = ly_tpp.get(s_)
+            if ly3:
+                facts.append(fc.fact(ly3, 'amt', s_, f'{s_ or region} 3PP營業額 去年{M}(日報口徑)', src=f'日報_推雲端.query_sell {ly0:%Y/%m/%d}～{ly1:%m/%d}'))
+                facts.append(fc.fact(amt / ly3 - 1, 'rate', s_, f'{s_ or region} 3PP營業額 較去年同月 {M}', src=f'{amt:,.0f}/{ly3:,.0f}−1'))
+            cells.append(f'{s_ or region} 3PP {amt:,.0f}' + (f'（較去年同月 {amt / ly3 - 1:+.1%}）' if ly3 else '') + f'／目標 {tgt_ or 0:,.0f}／達成 '
+                         f'{"—" if ach is None else f"{ach:.1%}"}｜搭售率 {"—" if rt is None else f"{rt:.2%}"}'
+                         f'／目標 {"—" if rt_t is None else f"{rt_t:.2%}"}')
+        lines.append('【3PP】' + '；'.join(cells))
         for c in ('CPU', 'iPad', 'iPhone', 'Watch', 'AirPods'):
             cells = []
             for s in stores:
                 a, t = V.get((s, f'{c}保固搭售率 {M}整月')), V.get((s, f'{c}保固搭售率 {M}目標'))
                 ly = G.get((s, f'{c}保固合計搭售率 去年{M}'))
+                if a is not None and ly is not None:
+                    facts.append(fc.fact(a - ly, 'rate', s, f'{s or region} {c}保固搭售率 較去年同月(百分點) {M}',
+                                         src=f'{M}底日報 {a:.2%} − 產生器去年保固合計 {ly:.2%}'))
                 n, nt = V.get((s, f'{c}台數 {M}整月')), V.get((s, f'{c}台數 {M}目標'))
                 cells.append(f'{s or region} 台數 {n or 0:.0f}/{nt or 0:.0f}｜保固 {"—" if a is None else f"{a:.1%}"}'
                              f'/目標 {"—" if t is None else f"{t:.1%}"}/去年 {"—" if ly is None else f"{ly:.1%}"}')

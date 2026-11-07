@@ -92,6 +92,17 @@ def from_apple_mail(since):
                 break
 
 
+def from_daily_dir():
+    """mini：信件備份另存的 日報附件/日期/他區_南區_南區日報_日期.xlsx。"""
+    for fp in sorted((ARCHIVE / '日報附件').glob('*/他區_*.xlsx')):
+        m = re.match(r'他區_([\u4e00-\u9fff]{1,4}區)_.*_(\d{8})\.xlsx$', fp.name)
+        if m:
+            try:
+                yield m.group(2), m.group(1), d43(fp.read_bytes())
+            except Exception:
+                pass
+
+
 def from_archive():
     msgs = ARCHIVE / 'msgs'
     if not msgs.exists():
@@ -118,7 +129,7 @@ def main():
     since = sys.argv[1] if len(sys.argv) > 1 else '2026-05-01'
     have, rows = load_existing()
     n = 0
-    for src in (from_apple_mail(since), from_archive()):
+    for src in (from_apple_mail(since), from_daily_dir(), from_archive()):
         for day, reg, text in src:
             if text and (day, reg) not in have:
                 have.add((day, reg))
