@@ -37,6 +37,9 @@ def load_facts(paths):
     for p in paths:
         with open(p, encoding='utf-8') as f:
             facts += json.load(f)['facts']
+    for x in facts:
+        if x.get('s') in REGION_WORDS:
+            x['s'] = ''
     return facts
 
 
@@ -46,7 +49,8 @@ def save_facts(path, facts, meta=None):
 
 
 def fact(v, u, s, l, g=None, src='', p=None):
-    return {'v': float(v), 'u': u, 's': s or '', 'l': l, 'g': g, 'src': src, 'p': p}
+    s = '' if (s or '') in REGION_WORDS else (s or '')     # 區合計門市欄＝空白（寫成「北二區」會被當成門市）
+    return {'v': float(v), 'u': u, 's': s, 'l': l, 'g': g, 'src': src, 'p': p}
 
 
 # 同一店同指標，哪些期間兩兩比較有意義（沒標期間的群組＝全部兩兩比）
@@ -99,6 +103,7 @@ class Index:
     """把事實＋衍生值依數值排序，查詢 O(log n)。"""
 
     def __init__(self, facts):
+        facts = [dict(f, s='') if f.get('s') in REGION_WORDS else f for f in facts]   # 區合計門市欄＝空白
         rows = [(f['v'], f['u'], f['s'], f['l'] + (f"［{f['src']}］" if f.get('src') else ''), True) for f in facts]
         rows += [(v, u, s, d, False) for v, u, s, d in derive(facts)]
         rows.sort(key=lambda r: r[0])
@@ -136,8 +141,9 @@ def extract_numbers(text):
 
 
 PRODUCTS = {'CPU': ['CPU', 'Mac'], '電腦': ['CPU', 'Mac', '電腦'], 'Mac mini': ['Mac mini'], 'MacBook': ['MacBook', 'CPU'], 'iPad': ['iPad'],
+            'iPad mini': ['iPad mini'], 'AirPods 4': ['AirPods 4'], 'MacBook Pro': ['MacBook Pro', 'MBP'],
             'iPhone': ['iPhone'], 'Duo': ['Duo'], 'Watch': ['Watch'], 'AirPods': ['AirPods']}
-ATTRS = {'保固': ['保固', '合計'], 'AC+': ['AC+', 'AC'], 'ACPP': ['AC+', 'AC', 'ACPP'], 'SA Care': ['SA'],
+ATTRS = {'保固': ['保固', '合計', 'AC+'], 'AC+': ['AC+', 'AC'], 'ACPP': ['AC+', 'AC', 'ACPP', '保固'], 'SA Care': ['SA'],
          '3PP': ['3PP'], '營業額': ['營業額', '業績'], '業績': ['營業額', '業績'], '毛利': ['毛利'],
          '來客': ['來客', '人流'], '人流': ['來客', '人流'], '成交筆數': ['成交'], '舊換新': ['舊換新'],
          '零搭售': ['零搭售'], 'ARpedia': ['ARpedia'], 'MySetup': ['MySetup'], '喇叭': ['喇叭', 'Speaker'],
@@ -237,6 +243,8 @@ def check_numbers(text, facts, stores):
     for tok in extract_numbers(text):
         hits = candidates(tok, idx)
         store, product, attr, (stores_ok, loose_prod, loose_attr, prod_here) = context(text, tok['pos'], stores)
+        _ss = max(text.rfind(c, 0, tok['pos']) for c in '。\n') + 1
+        prods_sent = [k for k in PRODUCTS if k in text[_ss:tok['pos']]]
         attr0 = attr
         if tok['unit'] in CNT_UNITS and attr in ('營業額', '業績', '毛利'):
             attr = None                       # 「銷售 277 隻」是台數，前面講的營業額不算
@@ -274,7 +282,9 @@ def check_numbers(text, facts, stores):
                 ok_attr = generic or not attr or any(w in l for w in ATTRS[attr]) \
                     or (loose_attr and prod_here and prod_hit)
                 # 產品是前面子句延續來的、標籤本身沒產品：指標詞要明確對上才算（例「AC+ 金額 99 萬」）
+                # 產品是前面子句延續來的：同一句前面講過的其他產品也算（「iPhone 304 支，其中 Duo 68 支…搭售率 24%」）
                 ok_prod = generic or not product or any(w.lower() in l.lower() for w in PRODUCTS[product]) \
+                    or (loose_prod and any(w.lower() in l.lower() for k in prods_sent for w in PRODUCTS[k])) \
                     or (loose_prod and no_prod and attr is not None and ok_attr)
                 return (ok_store and ok_prod and ok_attr, ok_store + ok_prod + ok_attr, base)
 
@@ -333,7 +343,7 @@ def rule_results(text, profile):
         n = len(re.sub(r'\s', '', text))
         if n < 200:
             out.append(('⚠️', '長度（要填滿 D43，約 220 字以上）', f'全文只有 {n} 字'))
-        for p in paras:
+        for p in paras if profile == 'daily_n1' else []:      # Yuni（北二）本來就句號結尾
             if p.rstrip().endswith('。'):
                 out.append(('⚠️', '句尾通常無句號', f'{p[-15:]}'))
             if '。' in p.rstrip()[:-1]:
