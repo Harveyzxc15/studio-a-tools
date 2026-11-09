@@ -51,10 +51,9 @@ def split_action(text):
 
 
 def _dev_at(clause, last):
-    for d, pat in _DEV:
-        if re.search(pat, clause):
-            return d
-    return last
+    """子句裡最先出現的品類（「iPhone 與 Mac」是 iPhone）；沒有就沿用前面的。"""
+    hits = [(m.start(), d) for d, pat in _DEV for m in [re.search(pat, clause)] if m]
+    return min(hits)[1] if hits else last
 
 
 def clause_topics(text, with_units=True):

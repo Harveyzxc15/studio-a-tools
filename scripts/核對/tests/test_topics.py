@@ -24,6 +24,9 @@ class TopicTest(unittest.TestCase):
         self.assertEqual(T.polarity('iPhone 零搭售也由 19 隻減少至 12 隻', 'zero:iPhone'), '+')
         self.assertEqual(T.polarity('本週 3PP 完成約 16.6 萬，較前週下滑 32.8%', 'tpp'), '-')
 
+    def test_first_device_wins(self):
+        self.assertEqual(T.topics_of('iPhone 與 Mac 本週零搭售增加'), ['zero:iPhone'])
+
     def test_action_not_topic(self):
         # 要求裡提到的品項不算這格的主題
         self.assertNotIn('case:iPhone', T.topics_of('本週喇叭由 3.1 萬降至 7,900 元，請夥伴交機時推薦保護殼'))

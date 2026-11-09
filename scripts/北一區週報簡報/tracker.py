@@ -82,8 +82,11 @@ def collect(work, need_prev=True):
     mat = (work / '評語素材.md').read_text(encoding='utf-8')
     m = re.search(r'本週 (\d\d/\d\d)~(\d\d/\d\d)，上週 (\d\d/\d\d)~(\d\d/\d\d)', mat)
     cur_lab, prev_lab = f'{m[1]}~{m[2]}', f'{m[3]}~{m[4]}'
-    xs = sorted(work.glob('tmp*/*.xlsx')) or sorted(work.glob('*週報_*.xlsx'))
-    wb = openpyxl.load_workbook(xs[0], data_only=True)
+    xs = sorted(work.glob('tmp*/*.xlsx'), key=lambda f: f.stat().st_mtime) or \
+        sorted(work.glob('*週報_*.xlsx'), key=lambda f: f.stat().st_mtime)
+    if not xs:
+        raise FileNotFoundError(f'{work} 沒有週報 Excel（重算暫存或 *週報_*.xlsx）')
+    wb = openpyxl.load_workbook(xs[-1], data_only=True)
     M = {s: {} for s in B.NAMES}
 
     def put(s, key, cur=None, prev=None):
@@ -121,10 +124,12 @@ def collect(work, need_prev=True):
         cols = {ws.cell(r, x).value: x for x in range(c, c + 6)}
         for rr, s in _rows_below(ws, r + 1, c):
             g, x = ws.cell(rr, cols['抵用券贈出']).value, ws.cell(rr, cols['抵用券兌換']).value
-            put(s, 'coupon', (x / g) if g else None)
+            put(s, 'coupon', ((x or 0) / g) if g else None)
     for r, c in _find(ws, '喇叭銷售金額'):
-        pc = next(x for x in range(c, c + 6) if ws.cell(r + 1, x).value == '上週')
-        cc = next(x for x in range(c, c + 6) if ws.cell(r + 1, x).value == '本週')
+        pc = next((x for x in range(c, c + 6) if ws.cell(r + 1, x).value == '上週'), None)
+        cc = next((x for x in range(c, c + 6) if ws.cell(r + 1, x).value == '本週'), None)
+        if not (pc and cc):
+            continue
         for rr, s in _rows_below(ws, r + 2, c):
             put(s, 'speaker', ws.cell(rr, cc).value, ws.cell(rr, pc).value)
     for title, fields in PAIR_BLOCKS.items():
@@ -160,8 +165,8 @@ def collect(work, need_prev=True):
                 put(mm[1], 'mysetup', int(mm[2]) / int(mm[3]))
 
     if need_prev:                                   # 只有本週值的指標，上週值從上週資料夾補
-        prev_dir = work.parent / B.Period(B.date.fromisoformat(_wk_end(mat, work)) - B.timedelta(days=7)).full
-        if (prev_dir / '評語素材.md').exists():
+        prev_dir = prev_week_dir(work)
+        if prev_dir and (prev_dir / '評語素材.md').exists():
             try:
                 PM = collect(prev_dir, need_prev=False)
                 for s in M:
@@ -173,10 +178,12 @@ def collect(work, need_prev=True):
     return M
 
 
-def _wk_end(mat, work):
-    st = json.loads((work / 'state.json').read_text(encoding='utf-8')) if (work / 'state.json').exists() else {}
-    m = re.search(r'週報_(\d{4}-\d\d-\d\d)\.xlsx', st.get('xlsx', '') + ' '.join(p.name for p in work.glob('*.xlsx')))
-    return m[1]
+def prev_week_dir(work):
+    """同一層、週次比本週小的最新資料夾（例：27Q1W06 → 27Q1W05）；週次資料夾名稱＝P.full。"""
+    lab = work.name
+    sib = sorted(d for d in work.parent.iterdir()
+                 if d.is_dir() and re.fullmatch(r'\d\dQ\dW\d\d', d.name) and d.name < lab)
+    return sib[-1] if sib else None
 
 
 # ───────────── 帳本 ─────────────
@@ -216,7 +223,13 @@ def finals_history(n=4):
 
 def update_ledger(ledger, label, prev_label, finals, M):
     items = ledger.setdefault('items', [])
-    find = {(i['store'], i['key']): i for i in items if i['status'] == 'open'}
+    # 還在追的＋本週（重跑時）才結案的都算「已有」，不重開
+    find = {(i['store'], i['key']): i for i in items if i['status'] == 'open' or i.get('closed') == label}
+    done = ledger.setdefault('finals_done', {})        # 定稿週次 → 處理它的那一週
+    if prev_label and done.get(prev_label, label) != label:
+        finals = {}                                     # 這份定稿之前就處理過了（例如這週沒收到新定稿），不再開帳
+    elif prev_label and finals:
+        done[prev_label] = label
     # 1) 上週定稿 → 開新項目或把動作加到既有項目
     for s, cells in finals.items():
         s = B.store_key(s) or s
@@ -239,7 +252,12 @@ def update_ledger(ledger, label, prev_label, finals, M):
         if it['status'] != 'open' and it.get('closed') != label:
             continue
         it['history'] = [h for h in it['history'] if h['label'] != label]       # 重跑同一週不重複記
-        ref = it['history'][-1]['value'] if it['history'] else M.get(it['store'], {}).get(it['key'], {}).get('prev', it['baseline'])
+        if it['history']:
+            ref = it['history'][-1]['value']
+        else:
+            ref = M.get(it['store'], {}).get(it['key'], {}).get('prev')
+            if ref is None:
+                ref = it['baseline']
         now = M.get(it['store'], {}).get(it['key'], {}).get('cur')
         v = verdict(it['key'], ref, now)
         it['history'].append({'label': label, 'ref': ref, 'value': now, 'verdict': v})
