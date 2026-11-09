@@ -1266,6 +1266,16 @@ def main():
     prev_src = (f"定稿信（{R['final_mail']['sender']} 寄出的 {tmpl.name}）" if from_mail
                 else f'自己上週的簡報（沒有收到定稿信，{tmpl.name}）')
     mat = comment_material(P, data, xlsx_calc, work, prev_comments_of(D), prev_src)
+    try:                                            # 店長週報（Drive）：只取店長評語當背景；週一中午多半還沒傳齊，之後可再跑 manager_reports.py
+        import manager_reports
+        got = manager_reports.run(P.full, REGION, work=work)
+        miss = [n for n in NAMES if n not in got]
+        log(f'店長週報：已讀 {len(got)} 店' + (f'，尚未上傳 {"、".join(miss)}' if miss else ''))
+        if miss:
+            warn(f'店長週報尚未上傳：{"、".join(miss)}（之後跑 python3 manager_reports.py {P.full}'
+                 f'{" --region " + REGION if REGION != "北一區" else ""} 補上）')
+    except Exception as e:
+        warn(f'店長週報沒有讀到（{str(e)[:80]}）')
     try:                                            # 追蹤帳本＋選題矩陣寫進評語素材（測試 --out-dir 時不寫帳本）
         import tracker
         tracker.run(P.full, REGION, dry=bool(a.out_dir), work=work)

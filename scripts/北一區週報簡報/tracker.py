@@ -324,11 +324,29 @@ def flags(M, s):
     return out
 
 
-def matrix_md(M, hist):
-    F = {s: flags(M, s) for s in B.NAMES}
+DISTORT = ('大量採購', '送禮', '外國客', '教育價空機')     # 會讓零搭售／AC+ 偏高偏低的店長背景
+
+
+def mgr_note(mgr, s, key):
+    """問題格的店長背景：同品類（或沒寫品類）的大量採購／送禮／外國客／教育價空機。"""
+    if ':' not in key:                                  # 喇叭、3PP 不標（背景多半跟品類有關）
+        return ''
+    dev = key.split(':')[1]
+    kinds = []
+    for f in mgr.get(s, {}).get('flags', []):
+        if f['kind'] in DISTORT and dev in f.get('devices', []):
+            if f['kind'] not in kinds:
+                kinds.append(f['kind'])
+    return f'（店長：{"、".join(kinds)}）' if kinds else ''
+
+
+def matrix_md(M, hist, mgr=None):
+    mgr = mgr or {}
+    F = {s: {k: v + mgr_note(mgr, s, k) for k, v in flags(M, s).items()} for s in B.NAMES}
     md = ['## 選題矩陣（本週問題格＋近 4 週定稿寫過的題目）', '',
           '問題格：零搭售 ≥50%（或增加 ≥15 個百分點且 ≥35%）、AC+ ≤20%（或下降 ≥15 個百分點且 ≤35%）（該品類本週 ≥5 台才算）、喇叭較前週 -50% 以下、3PP -20% 以下。'
-          '括號是較前週變化（百分點）。選題時先看追蹤帳本要續追的，再從這裡挑；同一個問題最多兩店。', '',
+          '括號是較前週變化（百分點）；「店長：…」＝店長週報說有大量採購、送禮等背景，數字可能失真，寫之前先看「店長週報」一節。'
+          '選題時先看追蹤帳本要續追的，再從這裡挑；同一個問題最多兩店。', '',
           '| 店 | 本週問題格 | 近 4 週定稿寫過 |', '|---|---|---|']
     for s in B.NAMES:
         seen = []
@@ -342,6 +360,8 @@ def matrix_md(M, hist):
     for s, f in F.items():
         for k in f:
             cnt.setdefault(k, []).append(s)
+    # 店長說是大量採購造成的，不算進區級議題（例如遠百 AirPods 零搭售）
+    cnt = {k: [s for s in ss if '大量採購' not in F[s][k]] for k, ss in cnt.items()}   # 大量採購造成的不算
     wide = [(k, ss) for k, ss in cnt.items() if len(ss) >= 3]
     md.append('')
     if wide:
@@ -377,7 +397,12 @@ def run(label, region, finals=None, dry=False, work=None):
     ledger = update_ledger(ledger, label, prev_label or '', finals, M)
     if not dry:
         lp.write_text(json.dumps(ledger, ensure_ascii=False, indent=1), encoding='utf-8')
-    write_sections(work / '評語素材.md', [('追蹤帳本', ledger_md(ledger, label)), ('選題矩陣', matrix_md(M, hist))])
+    try:
+        import manager_reports
+        mgr = manager_reports.load(region, label)
+    except Exception:
+        mgr = {}
+    write_sections(work / '評語素材.md', [('追蹤帳本', ledger_md(ledger, label)), ('選題矩陣', matrix_md(M, hist, mgr))])
     return ledger
 
 
