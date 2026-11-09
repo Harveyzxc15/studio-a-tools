@@ -848,9 +848,11 @@ def build_ops(P, D, data, chart_files):
             nt = re.sub(r'Q\dW\d{1,2}', P.label, t)
             # 北二區寫「27 Q1W2」「2027 Q1W2」：週次前的年度跟著換（財年跨年時才會變）
             nt = re.sub(r'(?<!\d)(20)?\d\d(?= ?Q\dW)', lambda m: (str(P.fy) if m[1] else f'{P.fy % 100}'), nt)
-            if re.fullmatch(r'\d{4}年\d{1,2}/\d{1,2}~\d{4}年\d{1,2}/\d{1,2}週報', t):
+            # 北二區範本寫「…10/31 週報」（週報前有空格），保留原本的空格
+            m_dt = re.fullmatch(r'\d{4}年\d{1,2}/\d{1,2}~\d{4}年\d{1,2}/\d{1,2}( ?)週報', t)
+            if m_dt:
                 nt = (f'{P.wk_start.year}年{P.wk_start.month}/{P.wk_start.day}~'
-                      f'{P.wk_end.year}年{P.wk_end.month}/{P.wk_end.day}週報')
+                      f'{P.wk_end.year}年{P.wk_end.month}/{P.wk_end.day}{m_dt[1]}週報')
             if nt != t and '北二' not in t:
                 ops.append({'op': 'text', 's': s['i'], 'old': t, 'v': nt})
 
@@ -1076,13 +1078,14 @@ def sheet_md(ws, max_col=40, max_row=None):
     return '\n'.join(lines)
 
 
-def comment_material(P, data, xlsx_calc, out_dir, prev_comments):
+def comment_material(P, data, xlsx_calc, out_dir, prev_comments, prev_src=''):
     wb = openpyxl.load_workbook(xlsx_calc, data_only=True)
     md = [f'# {REGION}週報 {P.full} 評語素材（本週 {P.wk_start:%m/%d}~{P.wk_end:%m/%d}，上週 {P.pw_start:%m/%d}~{P.pw_end:%m/%d}）\n']
     tw, tm = data['summary'][7][0], data['summary'][7][1]
     md.append(f'簡報業績總表「總營業額」：當週 {tw:,.0f}、本月累積 {tm:,.0f}（講稿的總營業額用這個；跟下面週報 Excel「總業績」'
               f'的差＝SA Care 計法不同：DSS 門市週報以價目表價×套數、週報 Excel 用成交金額）\n')
     md.append('## 上週簡報的評語（追蹤「先前要求的事項」用）\n')
+    md.append(f'上週評語來源：{prev_src}\n')
     for store, (a, b) in prev_comments.items():
         md.append(f'### {store}\n- 上週店點狀況：{a}\n- 執行進度與改善狀況：{b}\n')
     prev = Period(P.wk_end - timedelta(days=7))
@@ -1259,7 +1262,16 @@ def main():
                 speech_finals.fetch(Period(P.pw_end).full)
             except (Exception, SystemExit) as e:
                 warn(f'上週講稿定稿沒取回（{str(e)[:80]}），寫講稿時請使用者確認')
-    mat = comment_material(P, data, xlsx_calc, work, prev_comments_of(D))
+    from_mail = bool(R.get('final_mail')) and tmpl.parent == R['final_dir']
+    prev_src = (f"定稿信（{R['final_mail']['sender']} 寄出的 {tmpl.name}）" if from_mail
+                else f'自己上週的簡報（沒有收到定稿信，{tmpl.name}）')
+    mat = comment_material(P, data, xlsx_calc, work, prev_comments_of(D), prev_src)
+    try:                                            # 追蹤帳本＋選題矩陣寫進評語素材（測試 --out-dir 時不寫帳本）
+        import tracker
+        tracker.run(P.full, REGION, dry=bool(a.out_dir), work=work)
+        log('追蹤帳本、選題矩陣已寫進評語素材')
+    except Exception as e:
+        warn(f'追蹤帳本沒有產生（{str(e)[:80]}），寫評語時請自己對照上週定稿')
     repairs = '、'.join(k.replace('維修', '') for k in R['repair'])
     manual = ['維修中心預約', f'SACare 整機搭售（{repairs} 3PP 頁）', '維修滿意度 CSAT']
     if R['headcount'] != 'schedule' or R.get('headcount_fallback'):

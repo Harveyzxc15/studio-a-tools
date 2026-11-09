@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import factcheck as fc
+import topics
 
 
 def stores_for(profile):
@@ -50,6 +51,20 @@ def run(a):
         out.append(md)
         bad += b
         warn += w
+    if a.text.endswith('.json') and a.profile.startswith('weekly'):
+        # 跨格檢查：本週各格之間、與上週定稿（同資料夾 評語素材.md 的「上週簡報的評語」）比重複與選題
+        mat = os.path.join(os.path.dirname(os.path.abspath(a.text)), '評語素材.md')
+        last, src = ({}, '找不到評語素材.md')
+        if os.path.exists(mat):
+            with open(mat, encoding='utf-8') as f:
+                last, src = topics.last_finals_from_material(f.read())
+            src = src or '評語素材沒有寫來源（舊版素材）'
+        res = topics.cross_checks(json.loads(raw), last, src)
+        lines = ['## 跨格檢查｜重複與選題（本週各格＋上週定稿）', '']
+        lines += [f'- {st} {name}：{why}' for st, name, why in res]
+        out.append('\n'.join(lines))
+        bad += sum(st == '❌' for st, _, _ in res)
+        warn += sum(st == '⚠️' for st, _, _ in res)
     summary = f'\n# 總結：❌ {bad}｜⚠️ {warn} → ' + ('不能交付' if bad else '可交付（⚠️ 要逐條確認）' if warn else '全部通過')
     text = '\n\n'.join(out) + summary
     if a.out:

@@ -47,11 +47,17 @@ def classify(draft, final):
     return ('微調' if r >= 0.8 else '改寫' if r >= 0.4 else '換題'), r
 
 
+def kpi(cnt, n):
+    """KPI（2026-11-09 定）：換題 ≤1 段，且「未修改＋只改標點」過半。"""
+    ok = cnt['換題'] <= 1 and cnt['未修改'] + cnt['只改標點'] > n / 2
+    return '✅' if ok else '❌'
+
+
 def table(region, path):
     if not path.exists():
         return []
-    rows = [f'## {region}', '', '| 週次 | 段數 | ' + ' | '.join(KINDS) + ' | 平均相似度 | 換題的段落 |',
-            '|---|---|' + '---|' * len(KINDS) + '---|---|']
+    rows = [f'## {region}', '', '| 週次 | 段數 | ' + ' | '.join(KINDS) + ' | 平均相似度 | KPI | 換題的段落 |',
+            '|---|---|' + '---|' * len(KINDS) + '---|---|---|']
     for label, items in parse(path.read_text(encoding='utf-8')).items():
         cnt = dict.fromkeys(KINDS, 0)
         sims, swapped = [], []
@@ -64,13 +70,14 @@ def table(region, path):
         if not items:
             continue
         rows.append(f'| {label} | {len(items)} | ' + ' | '.join(str(cnt[k]) for k in KINDS)
-                    + f' | {sum(sims) / len(sims):.0%} | {"、".join(swapped) or "-"} |')
+                    + f' | {sum(sims) / len(sims):.0%} | {kpi(cnt, len(items))} | {"、".join(swapped) or "-"} |')
     return rows + ['']
 
 
 def main():
     md = ['# 評語貼近度（初稿 vs 定稿）', '',
-          '由 `edit_stats.py` 從評語修改紀錄自動產生。目標：「未修改＋只改標點」逐週變多、「換題」變少。',
+          '由 `edit_stats.py` 從評語修改紀錄自動產生。目標：「未修改＋只改標點」逐週變多、「換題」變少。'
+          ' **KPI**：每週換題 ≤1 段，且「未修改＋只改標點」超過一半（2026-11-09 起，目標 W07～W10 內連續達標）。',
           '換題代表選題跟使用者想講的不一樣（看修改紀錄裡定稿講了什麼），比用字更值得先改。', '']
     for region, path in LOGS:
         md += table(region, path)
