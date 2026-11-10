@@ -1276,6 +1276,13 @@ def main():
                  f'{" --region " + REGION if REGION != "北一區" else ""} 補上）')
     except Exception as e:
         warn(f'店長週報沒有讀到（{str(e)[:80]}）')
+    try:                                            # 大單（企業戶／通訊業、同客戶多台）＋夥伴零搭售，選題矩陣用
+        import bulk
+        bd = bulk.run(P.full, REGION, P.wk_start, P.wk_end, 'DSS' if a.tpp else 'EPB', work)
+        hit = [f'{s} {c} {b["n"]} 台' for s, v in bd['stores'].items() for c, b in v['bulk'].items()]
+        log('大單：' + ('、'.join(hit) if hit else '沒有'))
+    except (Exception, SystemExit) as e:
+        warn(f'大單辨識沒有跑（{str(e)[:80]}），選題矩陣的零搭售沒排除大單')
     try:                                            # 追蹤帳本＋選題矩陣寫進評語素材（測試 --out-dir 時不寫帳本）
         import tracker
         tracker.run(P.full, REGION, dry=bool(a.out_dir), work=work)
@@ -1287,7 +1294,7 @@ def main():
     if R['headcount'] != 'schedule' or R.get('headcount_fallback'):
         manual.insert(0, '業績總表「本週銷售人數」（暫填本週有銷售的人數）')
     state = {'region': REGION, 'label': P.full, 'deck': str(target), 'material': str(mat), 'xlsx': str(xlsx),
-             'stores': NAMES, 'warnings': WARN, 'manual': manual, 'check': check}
+             'stores': NAMES, 'wk_end': P.wk_end.isoformat(), '3pp_source': 'DSS' if a.tpp else 'EPB', 'warnings': WARN, 'manual': manual, 'check': check}
     (work / 'state.json').write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding='utf-8')
     log(f'✅ 簡報數字完成：{target}')
     log(f'   評語素材：{mat}')

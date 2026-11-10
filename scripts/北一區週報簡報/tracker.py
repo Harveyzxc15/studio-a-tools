@@ -340,11 +340,43 @@ def mgr_note(mgr, s, key):
     return f'（店長：{"、".join(kinds)}）' if kinds else ''
 
 
-def matrix_md(M, hist, mgr=None):
+def adjust_bulk(M, bulk):
+    """零搭售扣掉大單（bulk.json，bulk.cut_of 決定扣多少）→ (調整後的 M, {店: {鍵: 大單台數}})。上週值不動。"""
+    if not bulk:
+        return M, {}
+    import bulk as BK
+    M2, cut = json.loads(json.dumps(M)), {}
+    for s, v in bulk['stores'].items():
+        for dev, b in v['bulk'].items():
+            z = M2.get(s, {}).get(f'zero:{dev}')
+            if not z or z.get('cur') is None or not z.get('cur_n'):
+                continue
+            bn, bz = BK.cut_of(b, bulk['source'], z['cur_n'])
+            n, zz = z['cur_n'] - bn, round(z['cur'] * z['cur_n']) - bz
+            if not bn or n < 0 or zz < 0:         # 沒有要扣的，或對不上（簡報來源沒算到這些大單）就不扣
+                continue
+            z['cur'], z['cur_n'] = (zz / n if n else None), n
+            cut.setdefault(s, {})[f'zero:{dev}'] = bn
+    return M2, cut
+
+
+def matrix_md(M, hist, mgr=None, bulk=None):
     mgr = mgr or {}
-    F = {s: {k: v + mgr_note(mgr, s, k) for k, v in flags(M, s).items()} for s in B.NAMES}
+    M2, cut = adjust_bulk(M, bulk)
+    F = {}
+    for s in B.NAMES:
+        raw, adj = flags(M, s), flags(M2, s)
+        F[s] = {}
+        for k, v in adj.items():
+            F[s][k] = v + (f'（已排除大單 {cut[s][k]} 台）' if k in cut.get(s, {}) else '') + mgr_note(mgr, s, k)
+        for k, v in raw.items():                # 原本是問題格、扣掉大單後就不是
+            if k not in adj and k in cut.get(s, {}):
+                z = M2[s][k]['cur']
+                F[s][k + '#bulk'] = f'~~{v}~~ 排除大單 {cut[s][k]} 台後 {z*100:.0f}%，不算問題格' if z is not None \
+                    else f'~~{v}~~ 全是大單，不算問題格'
     md = ['## 選題矩陣（本週問題格＋近 4 週定稿寫過的題目）', '',
           '問題格：零搭售 ≥50%（或增加 ≥15 個百分點且 ≥35%）、AC+ ≤20%（或下降 ≥15 個百分點且 ≤35%）（該品類本週 ≥5 台才算）、喇叭較前週 -50% 以下、3PP -20% 以下。'
+          '零搭售已扣掉 EPB 辨識的大單（企業戶／通訊業、同客戶同品類 ≥5 台；簡報數字不變，評語可寫「含一筆大量採購」），較前週變化用扣掉後的本週值對上週。'
           '括號是較前週變化（百分點）；「店長：…」＝店長週報說有大量採購、送禮等背景，數字可能失真，寫之前先看「店長週報」一節。'
           '選題時先看追蹤帳本要續追的，再從這裡挑；同一個問題最多兩店。', '',
           '| 店 | 本週問題格 | 近 4 週定稿寫過 |', '|---|---|---|']
@@ -359,6 +391,8 @@ def matrix_md(M, hist, mgr=None):
     cnt = {}
     for s, f in F.items():
         for k in f:
+            if k.endswith('#bulk'):
+                continue
             cnt.setdefault(k, []).append(s)
     # 店長說是大量採購造成的，不算進區級議題（例如遠百 AirPods 零搭售）
     cnt = {k: [s for s in ss if '大量採購' not in F[s][k]] for k, ss in cnt.items()}   # 大量採購造成的不算
@@ -402,7 +436,12 @@ def run(label, region, finals=None, dry=False, work=None):
         mgr = manager_reports.load(region, label)
     except Exception:
         mgr = {}
-    write_sections(work / '評語素材.md', [('追蹤帳本', ledger_md(ledger, label)), ('選題矩陣', matrix_md(M, hist, mgr))])
+    import bulk as BK
+    bk = BK.load(work)
+    sections = [('追蹤帳本', ledger_md(ledger, label)), ('選題矩陣', matrix_md(M, hist, mgr, bk))]
+    if bk:
+        sections.append(('夥伴零搭售', BK.people_md(bk)))
+    write_sections(work / '評語素材.md', sections)
     return ledger
 
 
