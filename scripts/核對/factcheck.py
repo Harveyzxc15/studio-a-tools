@@ -321,8 +321,9 @@ def check_numbers(text, facts, stores):
 
 
 # ---------------------------------------------------------------- 寫法規則
-def rule_results(text, profile):
-    """profile: daily_n1 / daily_n2 / weekly_n1 / weekly_n2 / analysis。回傳 [(狀態, 規則, 說明)]。"""
+def rule_results(text, profile, speech=False):
+    """profile: daily_n1 / daily_n2 / weekly_n1 / weekly_n2 / analysis。回傳 [(狀態, 規則, 說明)]。
+    speech＝週報講稿（.md，唸的稿子）：評語的「每格」格式規則（北二每格字數／句號、北一句尾無句號）不適用。"""
     out = []
     paras = [p for p in text.split('\n') if p.strip()]
 
@@ -358,7 +359,7 @@ def rule_results(text, profile):
     if profile in ('weekly_n1', 'weekly_n2'):
         if re.search(r'AC\+\s*搭售率[^，。]{0,12}合計', text):
             out.append(('⚠️', '保固口徑', 'AC+＋SA Care 要寫「保固合計搭售率」'))
-    if profile == 'weekly_n2':
+    if profile == 'weekly_n2' and not speech:
         for p in paras:
             n = len(re.sub(r'\s', '', p))
             if n > 110:
@@ -366,7 +367,7 @@ def rule_results(text, profile):
                             f'{n} 字：{p[:20]}…'))
             if not p.rstrip().endswith('。'):
                 out.append(('❌', '北二每格結尾加「。」', p[-15:]))
-    if profile == 'weekly_n1':
+    if profile == 'weekly_n1' and not speech:
         for p in paras:
             if p.rstrip().endswith('。'):
                 out.append(('⚠️', '北一週報評語句尾通常無句號', p[-15:]))
@@ -374,9 +375,9 @@ def rule_results(text, profile):
 
 
 # ---------------------------------------------------------------- 核對單
-def report(text, facts, profile, stores, extra=None, title='核對單', rule_text=None):
+def report(text, facts, profile, stores, extra=None, title='核對單', rule_text=None, speech=False):
     nums = check_numbers(text, facts, stores)
-    rules = rule_results(rule_text if rule_text is not None else text, profile)
+    rules = rule_results(rule_text if rule_text is not None else text, profile, speech=speech)
     extra = extra or []
     n_bad = sum(r['status'] == '❌' for r in nums) + sum(s == '❌' for s, _, _ in rules + extra)
     n_warn = sum(r['status'] == '⚠️' for r in nums) + sum(s == '⚠️' for s, _, _ in rules + extra)

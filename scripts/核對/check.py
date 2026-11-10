@@ -38,7 +38,9 @@ def run(a):
             for i, p in enumerate(paras, 1):
                 parts.append((f'{store} 第{i}段', p))
     else:
-        parts.append(('草稿', raw.strip()))
+        speech_md = a.profile.startswith('weekly') and a.text.endswith('.md')     # 週報講稿：去掉 # 標題行
+        body = '\n'.join(l for l in raw.splitlines() if not l.lstrip().startswith('#')) if speech_md else raw
+        parts.append(('草稿', body.strip()))
     out, bad, warn = [], 0, 0
     for title, text in parts:
         if a.text.endswith('.json'):
@@ -47,7 +49,8 @@ def run(a):
         else:
             text_ctx = text
         md, b, w, _, _ = fc.report(text_ctx, facts, a.profile, stores_for(a.profile),
-                                   extra=checks if not out else None, title=f'核對單｜{title}', rule_text=text)
+                                   extra=checks if not out else None, title=f'核對單｜{title}', rule_text=text,
+                                   speech=a.profile.startswith('weekly') and a.text.endswith('.md'))
         out.append(md)
         bad += b
         warn += w
