@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import factcheck as fc
+import topics
 
 
 def stores_for(profile):
@@ -37,7 +38,9 @@ def run(a):
             for i, p in enumerate(paras, 1):
                 parts.append((f'{store} 第{i}段', p))
     else:
-        parts.append(('草稿', raw.strip()))
+        speech_md = a.profile.startswith('weekly') and a.text.endswith('.md')     # 週報講稿：去掉 # 標題行
+        body = '\n'.join(l for l in raw.splitlines() if not l.lstrip().startswith('#')) if speech_md else raw
+        parts.append(('草稿', body.strip()))
     out, bad, warn = [], 0, 0
     for title, text in parts:
         if a.text.endswith('.json'):
@@ -46,10 +49,47 @@ def run(a):
         else:
             text_ctx = text
         md, b, w, _, _ = fc.report(text_ctx, facts, a.profile, stores_for(a.profile),
-                                   extra=checks if not out else None, title=f'核對單｜{title}', rule_text=text)
+                                   extra=checks if not out else None, title=f'核對單｜{title}', rule_text=text,
+                                   speech=a.profile.startswith('weekly') and a.text.endswith('.md'))
         out.append(md)
         bad += b
         warn += w
+    if a.text.endswith('.json') and a.profile.startswith('weekly'):
+        # 跨格檢查：本週各格之間、與上週定稿（同資料夾 評語素材.md 的「上週簡報的評語」）比重複與選題
+        mat = os.path.join(os.path.dirname(os.path.abspath(a.text)), '評語素材.md')
+        last, src = ({}, '找不到評語素材.md')
+        if os.path.exists(mat):
+            with open(mat, encoding='utf-8') as f:
+                last, src = topics.last_finals_from_material(f.read())
+            src = src or '評語素材沒有寫來源（舊版素材）'
+        # 上上週：同層前兩個週次資料夾的 評語.json（用來抓同店連三週同主題）
+        week_dir = os.path.dirname(os.path.abspath(a.text))
+        weeks = sorted(w for w in os.listdir(os.path.dirname(week_dir))
+                       if w < os.path.basename(week_dir) and os.path.exists(os.path.join(os.path.dirname(week_dir), w, '評語.json')))
+        older = {}
+        if len(weeks) >= 2:
+            with open(os.path.join(os.path.dirname(week_dir), weeks[-2], '評語.json'), encoding='utf-8') as f:
+                older = json.load(f)
+        res = topics.cross_checks(json.loads(raw), last, src, older)
+        lines = ['## 跨格檢查｜重複與選題（本週各格＋上週定稿＋上上週）', '']
+        lines += [f'- {st} {name}：{why}' for st, name, why in res]
+        out.append('\n'.join(lines))
+        bad += sum(st == '❌' for st, _, _ in res)
+        warn += sum(st == '⚠️' for st, _, _ in res)
+    if a.profile.startswith('weekly') and os.path.basename(a.text) == '講稿.md':
+        # 講稿跨週：跟前一個週次資料夾的 講稿.md 比結構與開場
+        week_dir = os.path.dirname(os.path.abspath(a.text))
+        prev = sorted(w for w in os.listdir(os.path.dirname(week_dir))
+                      if w < os.path.basename(week_dir) and os.path.exists(os.path.join(os.path.dirname(week_dir), w, '講稿.md')))
+        last_md = None
+        if prev:
+            with open(os.path.join(os.path.dirname(week_dir), prev[-1], '講稿.md'), encoding='utf-8') as f:
+                last_md = f.read()
+        res = topics.speech_checks(raw, last_md)
+        if res:
+            out.append('\n'.join(['## 講稿多元化｜跟上週比', ''] + [f'- {st} {name}：{why}' for st, name, why in res]))
+            bad += sum(st == '❌' for st, _, _ in res)
+            warn += sum(st == '⚠️' for st, _, _ in res)
     summary = f'\n# 總結：❌ {bad}｜⚠️ {warn} → ' + ('不能交付' if bad else '可交付（⚠️ 要逐條確認）' if warn else '全部通過')
     text = '\n\n'.join(out) + summary
     if a.out:

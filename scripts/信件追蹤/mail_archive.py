@@ -41,6 +41,61 @@ MAX_ATT = 15 * 1024 * 1024
 REPORT_NAME = re.compile(r'盤|檢查表|週報|日報|寄銷|報表|業績|Daily|Weekly', re.I)
 
 
+# 日報盲測自動化要用：門市日報附件、Bob／Yuni 寄出的區日報（D43 概況）另存，保留 21 天
+DAILY_DIR = Path(__file__).parent / 'archive' / '日報附件'
+DAILY_STORE = re.compile(r'^\d{3}_[^/]*日報_(\d{8})(-\d+)?\.xlsx$')
+DAILY_REGION = re.compile(r'^北[一二]區_北[一二]區日報_(\d{8})\.xlsx$')
+DAILY_SENDERS = ('bob.yu@studioa.com.tw', 'yuni.wang@studioa.com.tw')
+DAILY_OTHER = re.compile(r'^([\u4e00-\u9fff]{1,4}區)_\1日報_(\d{8})\.xlsx$')   # 其他區主管的區日報（選題範例）
+DAILY_KEEP_DAYS = 21
+
+
+def save_daily(fn, sender, data):
+    """門市日報 → 日報附件/日期/檔名；Bob／Yuni 寄的區日報 → 日報附件/日期/寄出_檔名。"""
+    m = DAILY_STORE.match(fn)
+    name = fn
+    if not m:
+        m = DAILY_REGION.match(fn)
+        if m and sender in DAILY_SENDERS:
+            name = '寄出_' + fn
+        else:
+            o = DAILY_OTHER.match(fn)
+            if not o or re.match(r'^北[一二ㄧ]區', fn):
+                return
+            m, name = re.match(r'.*_(\d{8})\.xlsx$', fn), '他區_' + fn
+    if not data or len(data) > MAX_ATT:
+        return
+    d = DAILY_DIR / m.group(1)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(data)
+
+
+def prune_daily():
+    cutoff = (datetime.now() - timedelta(days=DAILY_KEEP_DAYS)).strftime('%Y%m%d')
+    if DAILY_DIR.exists():
+        for d in DAILY_DIR.iterdir():
+            if d.is_dir() and re.fullmatch(r'\d{8}', d.name) and d.name < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+        done = DAILY_DIR / '.done'
+        old = datetime.now().timestamp() - DAILY_KEEP_DAYS * 86400
+        for f in (done.iterdir() if done.exists() else []):
+            if f.stat().st_mtime < old:
+                f.unlink(missing_ok=True)
+
+
+def daily_from_raw(raw):
+    """只把一封信裡的日報附件另存，並記下這封處理過。"""
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    sender = parseaddr(str(msg.get('From', '')))[1].lower()
+    for part in msg.walk():
+        fn = part.get_filename()
+        if fn and fn.lower().endswith('.xlsx') and '日報_' in fn:
+            save_daily(fn, sender, part.get_payload(decode=True) or b'')
+    done = DAILY_DIR / '.done'
+    done.mkdir(parents=True, exist_ok=True)
+    (done / msg_key(msg)).touch()
+
+
 def keep_attachment(fn, sender):
     from mail_digest import STORE_BOXES   # 門市信箱寄的附件都是例行回報
     return (fn.lower().endswith(KEEP_EXT) and not REPORT_NAME.search(fn)
@@ -76,6 +131,11 @@ def save(raw, received, src, sender=None, sender_name=None, subject=None):
         fn = part.get_filename()
         if fn:
             files.append(fn)
+            if fn.lower().endswith('.xlsx') and '日報_' in fn:
+                try:
+                    save_daily(fn, sender, part.get_payload(decode=True) or b'')
+                except Exception:
+                    pass
             if keep_attachment(fn, sender):
                 try:
                     data = part.get_payload(decode=True) or b''
@@ -106,6 +166,9 @@ def save(raw, received, src, sender=None, sender_name=None, subject=None):
         'subject': subject if subject is not None else str(msg.get('Subject', '')).strip(),
         'body': text, 'files': files, 'saved_files': kept, 'src': src,
     }
+    if any(f.lower().endswith('.xlsx') and '日報_' in f for f in files):
+        (DAILY_DIR / '.done').mkdir(parents=True, exist_ok=True)
+        (DAILY_DIR / '.done' / key).touch()
     MSGS.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.tmp')
     tmp.write_text(json.dumps(rec, ensure_ascii=False))
@@ -155,6 +218,15 @@ def from_imap():
             key = msg_key(email.message_from_bytes(hdr, policy=email.policy.default))
             if (MSGS / f'{key}.json').exists():
                 seen += 1
+                # 已備份但當時沒另存日報附件（11/5 前備份的）→ 只為日報附件重抓一次
+                hmsg = email.message_from_bytes(hdr, policy=email.policy.default)
+                if re.search(r'daily ?report', str(hmsg.get('Subject', '')), re.I) and \
+                        not (DAILY_DIR / '.done' / key).exists():
+                    try:
+                        typ, full = M.uid('FETCH', uid, '(BODY.PEEK[])')
+                        daily_from_raw(next(x[1] for x in full if isinstance(x, tuple)))
+                    except Exception as e:
+                        print('  日報附件回填失敗', uid, type(e).__name__, e, file=sys.stderr)
                 continue
             # 單封解析失敗不能中斷整輪：那封沒存，下一小時又重試又中斷，備份就永遠卡住
             try:
@@ -244,6 +316,7 @@ def main():
         from_apple(a.apple)
     if a.imap:
         from_imap()
+        prune_daily()
     if not (a.apple or a.imap):
         ap.print_help()
 

@@ -13,6 +13,8 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from factcheck import fact, save_facts
@@ -20,6 +22,10 @@ from daily_facts import STORES, OUT_BASE
 
 ENGINE = {'北一區': Path.home() / 'Desktop/north1-weekly-report',
           '北二區': Path.home() / 'Desktop/north2-weekly-report'}
+# mini 排程讀不到 ~/Desktop：有 核對/引擎/<區>（筆電引擎的副本）就用它
+for _r in ENGINE:
+    if (Path(HERE) / '引擎' / _r / 'multistore_engine.py').exists():
+        ENGINE[_r] = Path(HERE) / '引擎' / _r
 # calc_store_metrics 欄位 → (標籤, 單位)
 KEYS = {'total_rev': ('總營業額', 'amt'), 'tpp_excl_sa': ('3PP營業額(未加Care)', 'amt'),
         'sa_rev': ('SA Care營業額', 'amt'), 'acpp_plus': ('AC+營業額', 'amt'), 'coupon_rev': ('禮券營業額', 'amt'),
@@ -58,25 +64,49 @@ def metrics_rows(m):
 
 
 def build(sat, region):
-    eng = load_engine(region)
-    codes = list(STORES[region])
     this = (sat - timedelta(days=6), sat)
     prev = (this[0] - timedelta(days=7), this[0] - timedelta(days=1))
-    df = eng.load_from_epb(prev[0], sat, store_codes=codes)
-    try:
-        df.attrs['txn'] = eng.load_txn_from_epb(prev[0], sat, codes)
-    except Exception:
-        pass
+    return build_range({'本週': this, '上週': prev}, region), []
+
+
+def build_range(periods, region):
+    """任意期間（{期間名: (起, 迄)}）各店＋區合計的產生器口徑事實。週對週、月初整月、去年同月共用。"""
+    eng = load_engine(region)
+    codes = list(STORES[region])
     sa_prices = eng.load_sacare_prices(str(ENGINE[region] / 'data' / 'SAcare對應價目表.xlsx'))
     facts = []
-    for per, (d1, d2) in (('本週', this), ('上週', prev)):
+    lo, hi = min(a for a, _ in periods.values()), max(b for _, b in periods.values())
+    spans = [(lo, hi)] if (hi - lo).days <= 62 else [(a, b) for a, b in periods.values()]
+    frames = []
+    for a, b in spans:
+        df = eng.load_from_epb(a, b, store_codes=codes)
+        try:
+            df.attrs['txn'] = eng.load_txn_from_epb(a, b, codes)
+        except Exception:
+            pass
+        frames.append(((a, b), df))
+    for per, (d1, d2) in periods.items():
+        df = next(f for (a, b), f in frames if a <= d1 and d2 <= b)
+        # 月底禮券回補（SA999 開的即享券／墨攻券／SA 禮券正值單）會灌進 total_rev，入帳日掛在月底那天；
+        # Bob／Yuni 週對週寫的是扣掉回補的（10/25–31 北一 3,031 萬−回補 794 萬＝2,238 萬、北二 3,861−598＝3,263 萬）
+        days = pd.to_datetime(df['單據日期']).dt.date
+        rb_mask = (df['員工代碼'].astype(str).str.upper() == 'SA999') & \
+            pd.to_numeric(df['類別3代碼'], errors='coerce').isin([3024, 3047, 3023, 3027]) & (df['銷售金額(含稅)'] > 0)
         for code in codes + [None]:
             who = STORES[region][code] if code else ''
             name = who or region
-            for label, (v, u) in metrics_rows(eng.calc_store_metrics(df, d1, d2, code, sa_prices)).items():
+            m = eng.calc_store_metrics(df, d1, d2, code, sa_prices)
+            sel = rb_mask & (days >= d1) & (days <= d2) & ((df['地點代碼'].astype(str) == code) if code else True)
+            rb = float(df.loc[sel, '銷售金額(含稅)'].sum())
+            rows = metrics_rows(m)
+            rows['禮券回補(SA999)'] = (rb, 'amt')
+            rows['總營業額(扣禮券回補)'] = ((m['total_rev'] or 0) - rb, 'amt')
+            if (m['total_rev'] or 0) - rb:
+                rows['3PP搭售率(含SA Care,扣回補)'] = ((m['tpp_rev'] or 0) / ((m['total_rev'] or 0) - rb), 'rate')
+            for label, (v, u) in rows.items():
                 facts.append(fact(v, u, who, f'{name} {label} {per}', g=f'{who}|{label}', src='週報產生器引擎', p=per))
                 facts.append(fact(v, u, who, f'{name} {label} {per}', g=f'{label}|{per}', src='週報產生器引擎', p=per))
-    return facts, []
+    return facts
 
 
 def main():

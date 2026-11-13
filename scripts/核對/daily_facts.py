@@ -15,7 +15,8 @@ import openpyxl
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from factcheck import fact, save_facts
 
-MAIL = os.path.expanduser('~/Library/Mail')
+# 自動盲測在 mini 跑：讀信件備份另存的日報附件（launchd 讀不到 ~/Library/Mail）
+MAIL = os.environ.get('DAILY_XLSX_DIR') or os.path.expanduser('~/Library/Mail')
 OUT_BASE = os.path.expanduser('~/工具中心/輸出/核對')
 STORES = {'北一區': {'004': '士林', '005': '微風', '024': '美麗華', '046': '阿波羅', '054': '高島屋', '057': '羅東'},
           '北二區': {'009': '永和', '025': '板橋誠品', '050': '西門', '055': '花蓮', '063': '板橋遠百',
@@ -52,13 +53,15 @@ def num(v):
     return v if isinstance(v, (int, float)) else 0
 
 
-def build(day, region):
+def build(day, region, allow_missing=False):
+    """allow_missing：缺店照算（⚠️ 不判 ❌），但不出區合計／店佔區（缺店加總會偏低）。"""
     stores = STORES[region]
     files = find_files(day, list(stores))
     facts, checks, raw = [], [], {}
     missing = [stores[c] for c in stores if c not in files]
     if missing:
-        checks.append(('❌', '資料完整', f'{day} 缺門市日報：{"、".join(missing)}（信還沒到齊，不要用其他店推估）'))
+        checks.append(('⚠️' if allow_missing else '❌', '資料完整',
+                       f'{day} 缺門市日報：{"、".join(missing)}（信還沒到齊，不要用其他店推估）'))
 
     pace = None
     for code, path in files.items():
@@ -89,8 +92,8 @@ def build(day, region):
                                           g=f'{label}|{per}', src='門市日報'))
         if d and int(d) != int(day[6:]):
             checks.append(('❌', '日期', f'{name} 檔案日期 {d} 與 {day} 不符'))
-    # 區合計
-    if raw:
+    # 區合計（缺店時不出，加總會偏低）
+    if raw and not missing:
         tot = {r: {c: sum(raw[s][r][c] for s in raw) for c in PERIODS} for r in ROWS}
         for r, (a, b) in RATES.items():
             for c in PERIODS:
@@ -111,7 +114,7 @@ def build(day, region):
                     if (r in (23, 26, 29, 32, 35, 7, 15, 17)) and tot[r][c]:
                         facts.append(fact(raw[s][r][c] / tot[r][c], 'rate', s, f'{s} {label} {per} 佔區',
                                           src='衍生'))
-    if not any(c[0] == '❌' and c[1] == '資料完整' for c in checks):
+    if not missing and not any(c[0] == '❌' and c[1] == '資料完整' for c in checks):
         checks.append(('✅', '資料完整', f'{day} {len(stores)} 店門市日報都在且有值'))
     if pace:
         facts.append(fact(pace, 'rate', '', '本月應達成率', src='門市日報 H5'))
