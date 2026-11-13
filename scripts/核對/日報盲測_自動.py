@@ -6,6 +6,7 @@
      → check 逐則核對（有 ❌ 讓 Claude 修一次，還有就剔除）→ 推「信件追蹤」頻道。
 
 用法：python3 日報盲測_自動.py [YYYYMMDD，預設昨天] [--dry 不推] [--no-wait 不等晚到的門市信]
+      python3 日報盲測_自動.py YYYYMMDD --push-only   # 已產好的那天補推到網站 /daily-blind
 輸出：~/工具中心/輸出/核對/自動盲測/<日期>/（prompt、Claude 原始回覆、各則草稿與核對單、result.json）
 """
 import datetime as dt
@@ -34,10 +35,12 @@ import daily_facts as DF             # noqa: E402
 import factcheck as fc               # noqa: E402
 import 盲測補充 as BX                 # noqa: E402
 
-OUT_BASE = Path('~/工具中心/輸出/核對').expanduser()
+OUT_BASE = Path(os.environ.get('BLIND_OUT') or '~/工具中心/輸出/核對').expanduser()   # BLIND_OUT：試跑時另存，不蓋正式結果
 CORPUS = HERE / '語料'
 WEBHOOK = Path('~/.config/studioa/mail_digest_discord_webhook.txt').expanduser()   # 跟每日保固圖同頻道
 TOKEN = Path('~/.config/studioa/claude_oauth_token').expanduser()
+HUB = os.environ.get('HUB_URL', 'https://sa-north-hub.fly.dev').rstrip('/')
+HUB_TOKEN = Path('~/.config/studioa/epb_push_token').expanduser()
 CLAUDE = next((p for p in (Path('~/.local/bin/claude').expanduser(),) if p.exists()), 'claude')
 ARCHIVE_PY = '/usr/local/bin/python3' if Path('/usr/local/bin/python3').exists() else sys.executable
 DEADLINE = dt.time(13, 20)           # 等晚寄的門市信最晚到幾點
@@ -98,8 +101,8 @@ def check_message(day, miss, first):
             why = mail_status(day, lack)
             lines.append(f'{region[:2]} {n - len(lack)}/{n}：缺 ' + '、'.join(f'{s}（{why[s]}）' for s in lack))
     if any(miss.values()):
-        lines.append(f'每 10 分鐘再看一次，最晚 {DEADLINE:%H:%M} 先寫到齊的那區' if first else
-                     f'已到 {DEADLINE:%H:%M}，先寫到齊的那區；缺店那區今天不寫（不拿其他店推估）')
+        lines.append(f'每 10 分鐘再看一次，最晚 {DEADLINE:%H:%M} 缺的店略過照寫' if first else
+                     f'已到 {DEADLINE:%H:%M}，照寫：缺店那區略過缺的店，區合計改用 EPB 口徑（不拿其他店推估）')
     else:
         lines.append('13 店都到齊，開始寫概況')
     return '\n'.join(lines)
@@ -400,6 +403,34 @@ def week_facts(day):
     return out
 
 
+YOY_ROWS = ['3PP營業額(未加Care)', 'CPU台數', 'iPad台數', 'iPhone台數', 'Watch台數', 'AirPods台數']
+
+
+def yoy_facts(day):
+    """本月累計 vs 去年同期（同月 1 日～同一天），週報產生器引擎口徑。回傳 {區: (facts, 表格文字)}。
+    Bob 11/10（CPU 台數）、11/11（3PP 金額）實寄用的去年同期就是這組數字（11/11 北一 295.2 萬／305.4 萬逐店對過）。"""
+    import week_facts as WF
+    d = dt.date(int(day[:4]), int(day[4:6]), int(day[6:]))
+    per = {'本月累計': (d.replace(day=1), d), '去年同期': (d.replace(year=d.year - 1, day=1), d.replace(year=d.year - 1))}
+    out = {}
+    for region in DF.STORES:
+        facts = [f for f in WF.build_range(per, region) if any(k in f['l'] for k in YOY_ROWS)]
+        V = {(f['s'], f['l'].split(' ', 1)[1]): f['v'] for f in facts}
+        L = [f'（週報產生器口徑；本月累計 {per["本月累計"][0]:%m/%d}～{d:%m/%d}，去年同期＝去年同一段日期；'
+             '3PP 是未加 SA Care 的金額。只有這裡列的項目可以寫「較去年同期」，保固搭售率不跟去年比；'
+             '台數跟日報表、保固圖可能差一兩台，寫去年同期對比時今年和去年都用這裡的數字）']
+        for label in YOY_ROWS:
+            cells = []
+            for s in [''] + list(DF.STORES[region].values()):
+                a, b = V.get((s, f'{label} 本月累計')), V.get((s, f'{label} 去年同期'))
+                if a is None or b is None:
+                    continue
+                cells.append(f'{s or region} {a:,.0f}／{b:,.0f}（{a - b:+,.0f}）')
+            L.append(f'【{label}】本月累計／去年同期（差額）：' + '；'.join(cells))
+        out[region] = (facts, '\n'.join(L))
+    return out
+
+
 def sent_d43(day):
     """日報附件/日期/寄出_北X區_北X區日報_日期.xlsx 的 D43 概況文字。回傳 {'北一區': text, '北二區': text}。"""
     out = {}
@@ -424,6 +455,28 @@ def recent_sent(day, n=7):
         for region, text in sorted(sent_d43(k).items()):
             rows.append((k, region, text))
     return rows
+
+
+def refresh_corpus(day):
+    """把語料最後一天之後、到 day 前一天為止的實寄概況補進 Bob日報.txt／Yuni日報.txt（語氣範例才不會停在舊的）。"""
+    end = dt.date(int(day[:4]), int(day[4:6]), int(day[6:]))
+    for region, name in (('北一區', 'Bob日報.txt'), ('北二區', 'Yuni日報.txt')):
+        p = CORPUS / name
+        if not p.exists():
+            continue
+        text = p.read_text(encoding='utf-8')
+        last = max(re.findall(r'(?m)^## (\d{8})', text), default=None)
+        if not last:
+            continue
+        d, add = dt.date(int(last[:4]), int(last[4:6]), int(last[6:])) + dt.timedelta(days=1), []
+        while d < end:
+            sent = sent_d43(d.strftime('%Y%m%d')).get(region)
+            if sent:
+                add.append(f'## {d:%Y%m%d}（{"一二三四五六日"[d.weekday()]}）\n{sent}\n')
+            d += dt.timedelta(days=1)
+        if add:
+            p.write_text(text.rstrip('\n') + '\n\n' + '\n'.join(add), encoding='utf-8')
+            log('語料補', name, len(add), '天')
 
 
 def corpus_tail(name, n):
@@ -537,33 +590,59 @@ def post(content):
         time.sleep(1)
 
 
+# ---------------------------------------------------------------- sa-north-hub
+def push_hub(result):
+    """把當天的 result.json 推到網站 /daily-blind（管理員頁）；token 跟其他推雲端腳本共用。"""
+    token = os.environ.get('EPB_PUSH_TOKEN') or HUB_TOKEN.read_text().strip()
+    req = urllib.request.Request(HUB + '/api/daily-blind', data=json.dumps(result, ensure_ascii=False).encode(),
+                                 headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read())
+
+
 # ---------------------------------------------------------------- main
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     dry, wait = '--dry' in sys.argv, '--no-wait' not in sys.argv
     day = args[0] if args else (dt.date.today() - dt.timedelta(days=1)).strftime('%Y%m%d')
     outdir = OUT_BASE / '自動盲測' / day
+    if '--push-only' in sys.argv:                 # 不重寫，只把已經產好的那天補推到網站
+        result = json.loads((outdir / 'result.json').read_text(encoding='utf-8'))
+        result['hits'] = BX.hit_records(day)
+        print(push_hub(result))
+        return
     outdir.mkdir(parents=True, exist_ok=True)
     md = f'{day[4:6]}/{day[6:]}'
     notes = []
     try:
         miss = wait_for_files(day, wait, notify=None if dry else post)
-        regions = [r for r in DF.STORES if not miss[r]]
+        check_lines = check_message(day, miss, False).splitlines()[1:]      # 網站跟 Discord 同一份（去掉標題）
+        regions = list(DF.STORES)
         for r in DF.STORES:
             if miss[r]:
-                notes.append(f'⚠️ {r} 門市日報缺 {"、".join(miss[r])}，這區今天不寫')
-        if not regions:
-            raise RuntimeError('兩區門市日報都沒到齊')
+                notes.append(f'⚠️ {r} 門市日報缺 {"、".join(miss[r])}：照寫，略過缺的店；日報區合計不用（缺店偏低），區數字用 EPB 口徑')
 
         facts, tables = {}, {}
         for r in regions:
-            f, checks = DF.build(day, r)
+            f, checks = DF.build(day, r, allow_missing=True)
             bad = [c for c in checks if c[0] == '❌']
             if bad:
                 notes.append(f'⚠️ {r} 事實檔有 ❌：{bad}，這區今天不寫')
                 continue
             facts[r], tables[r] = f, daily_table(f, r)
+            if miss[r]:
+                tables[r] = (f'⚠️ 今天 {"、".join(miss[r])} 沒有門市日報：不要提這店、不要寫日報口徑的「{r}」合計'
+                             f'（下表沒有區合計）；區整體數字只能用後面保固圖／重點項目（EPB 口徑，含全部門市）。\n\n'
+                             + tables[r])
         regions = list(facts)
+        stores, store_lines = [], []
+        try:
+            stores = BX.store_verdicts(day, facts)
+            store_lines = BX.verdict_lines(stores)
+            if not dry:
+                post(f'🏪 **{md} 門市概況能不能寫進兩區日報**\n' + '\n'.join(store_lines))
+        except Exception as e:
+            log('逐店判斷失敗：', e)
         try:
             ac = acpp_facts(day)
             for r in regions:
@@ -612,6 +691,14 @@ def main():
                     tables[r] += '\n\n# 週六：本週 vs 上週（A 一定寫週對週）\n' + wk[r][1]
             except Exception as e:
                 notes.append(f'⚠️ 週對週數字查不到（{type(e).__name__}: {e}），今天沒有週對週選項')
+        if not day.endswith('01'):
+            try:
+                yy = yoy_facts(day)
+                for r in regions:
+                    facts[r] += yy[r][0]
+                    tables[r] += '\n\n# 本月累計 vs 去年同期\n' + yy[r][1]
+            except Exception as e:
+                notes.append(f'⚠️ 去年同期數字查不到（{type(e).__name__}: {e}），今天不寫去年同期')
         for r in regions:
             fc.save_facts(str(outdir / f'facts_{r}.json'), facts[r], {'kind': 'daily_auto', 'region': r, 'day': day})
 
@@ -620,6 +707,10 @@ def main():
         except Exception as e:
             log('其他區語料更新失敗', e)
         compare = yesterday_compare(day)
+        try:
+            refresh_corpus(day)
+        except Exception as e:
+            log('語料更新失敗', e)
         prompt = build_prompt(day, regions, tables, recent_sent(day), compare)
         ans = ask_claude(prompt, outdir, 'draft')
 
@@ -661,12 +752,19 @@ def main():
                 except Exception as e:
                     log('撞句改寫失敗', o['region'], o['id'], e)
             o['dup'] = dup
-        (outdir / 'result.json').write_text(json.dumps({'day': day, 'options': options, 'notes': notes,
-                                                         'compare': compare}, ensure_ascii=False, indent=1),
-                                            encoding='utf-8')
+        hit = BX.hit_summary(day)
+        result = {'day': day, 'options': options, 'notes': notes, 'compare': compare, 'hit': hit,
+                  'check': check_lines, 'stores': stores, 'store_lines': store_lines,
+                  'hits': BX.hit_records(day)}
+        (outdir / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding='utf-8')
+        if not dry:
+            try:
+                log('推網站', push_hub(result))
+            except Exception as e:
+                log('推網站失敗（Discord 照推）：', e)
 
         head = [f'📝 **{md} 兩區日報概況盲測**（核對 0 ❌ 才列出；草稿與核對單在 mini `輸出/核對/自動盲測/{day}/`）', compare,
-                BX.hit_summary(day)] + notes
+                hit] + notes
         head = [h for h in head if h]
         msgs = ['\n'.join(head)]
         for o in options:

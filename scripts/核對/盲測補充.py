@@ -13,6 +13,7 @@ import datetime as dt
 import difflib
 import json
 import math
+import os
 import re
 from pathlib import Path
 
@@ -23,7 +24,7 @@ import factcheck as fc
 
 HERE = Path(__file__).resolve().parent
 CORPUS = HERE / '語料'
-OUT_BASE = Path('~/工具中心/輸出/核對').expanduser()
+OUT_BASE = Path(os.environ.get('BLIND_OUT') or '~/工具中心/輸出/核對').expanduser()
 REWRITE = CORPUS / '改寫紀錄.md'
 HITS = OUT_BASE / '自動盲測' / '命中紀錄.json'
 OTHER = CORPUS / '其他區日報.txt'
@@ -86,6 +87,71 @@ def store_notes(day):
                     '只能整理原文寫到的經過與處理，不能補細節或編原因）\n' + '\n'.join(lines))
         out[region] = (facts, text)
     return out
+
+
+SELF_RE = re.compile(r'搭售率|達成|不理想|偏低|落後|下滑|衰退|成長|目標|缺貨|斷貨')
+
+
+def store_verdicts(day, facts=None):
+    """逐店判斷門市日報概況能不能寫進兩區日報 → [{region, store, kind, reason}]。
+    kind：事件（可寫成事件題）／佐證（門市自評或數字，可當點名的第二角度）／一般（成交案例，不單獨寫）／沒寫／缺。
+    facts＝{區: 事實清單}：門市寫的 % 要對得上那店的日報數字，對不上標出來（不建議引用）。"""
+    out = []
+    for region, st in DF.STORES.items():
+        files = DF.find_files(day, list(st))
+        check = region in (facts or {})               # 那區事實檔沒建起來（有 ❌ 被跳過）就不比，免得每個 % 都誤判
+        rates = {}
+        for f in (facts or {}).get(region, []):
+            if f['u'] == 'rate':
+                rates.setdefault(f['s'], []).append(f['v'])
+        for code, name in st.items():
+            if code not in files:
+                out.append({'region': region, 'store': name, 'kind': '缺', 'reason': '沒有門市日報'})
+                continue
+            try:
+                t = re.sub(r'\s+', ' ', d43_text(files[code])).strip()
+            except Exception as e:
+                out.append({'region': region, 'store': name, 'kind': '沒寫', 'reason': f'讀不到（{type(e).__name__}）'})
+                continue
+            if not t:
+                out.append({'region': region, 'store': name, 'kind': '沒寫', 'reason': '概況格是空的'})
+                continue
+            pct = [tok for tok in fc.extract_numbers(t) if tok['unit'] in ('%', '％')
+                   and '會員' not in t[max(0, tok['pos'] - 8):tok['pos']]]
+            bad = [tok['text'] for tok in pct
+                   if check and not any(abs(v - tok['x'] / 100) <= 0.006 for v in rates.get(name, []))]
+            ev = sorted(set(EVENT_RE.findall(t)))
+            self_ = sorted(set(SELF_RE.findall(t)))
+            if ev:
+                kind, reason = '事件', '提到' + '、'.join(ev)
+            elif self_ or pct:
+                kind = '佐證'
+                cl = [c.strip() for c in re.split(r'[，。；]', t)
+                      if (SELF_RE.search(c) or re.search(r'[%％]', c)) and '會員' not in c]
+                cl.sort(key=lambda c: not re.search(r'不理想|偏低|落後|下滑|衰退|缺貨|斷貨', c))   # 落後的先講
+                reason = '門市自評：「' + '，'.join(cl[:2])[:60] + '」'
+            else:
+                kind, reason = '一般', '成交案例，不單獨成題'
+            if bad:
+                reason += f'｜⚠️ {"、".join(bad)} 對不上日報數字，不要引用'
+            out.append({'region': region, 'store': name, 'kind': kind, 'reason': reason})
+    return out
+
+
+def verdict_lines(vs):
+    """Discord 用的精簡版：每區一行可寫、一行不寫。"""
+    lines = []
+    for region in DF.STORES:
+        mine = [v for v in vs if v['region'] == region]
+        use = [f'{v["store"]}（{v["kind"]}：{v["reason"]}）' for v in mine if v['kind'] in ('事件', '佐證')]
+        rest = {}
+        for v in mine:
+            if v['kind'] not in ('事件', '佐證'):
+                rest.setdefault(v['kind'], []).append(v['store'])
+        lines.append(f'{region[:2]} 可寫：' + ('；'.join(use) if use else '無'))
+        if rest:
+            lines.append(f'{region[:2]} 不寫：' + '｜'.join(f'{k} {"、".join(s)}' for k, s in rest.items()))
+    return lines
 
 
 # ---------------------------------------------------------------- 2./命中率 實寄對比
@@ -170,6 +236,15 @@ def compare_day(prev, sent):
             log = '# 改寫紀錄（自動：被採用的選項 vs 實寄版；寫稿照這些改寫方向）\n' + log
         REWRITE.write_text(log, encoding='utf-8')
     return shown
+
+
+def hit_records(day, n=60):
+    """近 n 天命中紀錄（給網站畫命中率）：{資料日: {區: {best, topic, sim, tag, hit, a_hit, n_opts}}}。"""
+    if not HITS.exists():
+        return {}
+    hits = json.loads(HITS.read_text(encoding='utf-8'))
+    keep = ('best', 'topic', 'sim', 'tag', 'hit', 'a_hit', 'n_opts')
+    return {k: {r: {f: v.get(f) for f in keep} for r, v in hits[k].items()} for k in sorted(k for k in hits if k < day)[-n:]}
 
 
 def hit_summary(day, n=30):

@@ -147,11 +147,62 @@ def lcs(a, b):
 
 
 ACT_BAD, ACT_WARN, CELL_WARN = 10, 8, 18
+SAME_STORE_BAD, SAME_STORE_WARN = 0.50, 0.42      # 同店本週 vs 上週（遮罩後整段相似度）
+OPEN_SHARE = 0.5                                  # 同一種開頭佔全區格數超過這個比例就提醒
+_OPEN = [('接續上週', r'上週(?:提醒|要求|追蹤)|連續[兩二三]週'),
+         ('台數', r'銷售|由#[台隻支組套個](?:增加|減少|降)'),
+         ('金額', r'完成(?:約)?#|營業額|業績|由#[萬元]'),
+         ('問題', r'零搭售|未搭|沒有搭|下滑|未改善|偏低')]
+OPEN_LABEL = {'接續上週': '「上週提醒／要求…」', '台數': '主機台數（本週 X 銷售…）', '金額': '金額（本週 X 完成…）',
+              '問題': '直接點問題', '其他': '其他'}
 
 
-def cross_checks(comments, last=None, source=None):
-    """comments／last：{店: [A, B]}。回傳 [(狀態, 規則, 說明)]。"""
+def opening_type(text):
+    """第一個子句屬於哪種開頭：接續上週／台數／金額／問題／其他。"""
+    first = re.split(r'[，。；]', mask(text), 1)[0]
+    return next((name for name, pat in _OPEN if re.search(pat, first)), '其他')
+
+
+def ratio(a, b):
+    """遮罩（數字→#、產品→品）後的整段相似度：骨架一樣、只換數字和品類也算像。"""
+    return SequenceMatcher(None, mask(a), mask(b), autojunk=False).ratio()
+
+
+def week_checks(comments, last=None, older=None):
+    """同一家店跨週：跟上週太像、連續幾週同主題、開頭寫法太集中。older＝上上週 {店: [A, B]}。"""
     res = []
+    for s, v in comments.items():
+        prev = [t for t in (last or {}).get(s, []) if t]
+        old = [t for t in (older or {}).get(s, []) if t]
+        for i, t in enumerate(v):
+            if not t:
+                continue
+            cell = f'{s}{"AB"[i]}'
+            sim, j = max(((ratio(t, o), j) for j, o in enumerate(prev)), default=(0, 0))
+            if sim >= SAME_STORE_BAD:
+                res.append(('❌', '同店跟上週太像', f'{cell} 與上週{s}{"AB"[j]} 相似 {sim:.0%}（骨架一樣只換數字）→ 換切入角度與句型重寫'))
+            elif sim >= SAME_STORE_WARN:
+                res.append(('⚠️', '同店跟上週相近', f'{cell} 與上週{s}{"AB"[j]} 相似 {sim:.0%}'))
+            k = main_topic(t)
+            if k and any(main_topic(o) == k for o in prev):
+                if any(main_topic(o) == k for o in old):
+                    res.append(('⚠️', '同店連三週同主題', f'{cell}：{label(k)} 已連續第三週當主題 → 已改善就換題（併進另一格一句帶過）；仍落後要續追的話，角度、數字、要求動作全部換新'))
+                else:
+                    res.append(('⚠️', '同店連兩週同主題', f'{cell}：{label(k)} 上週也是主題 → 可以追蹤，但切入角度、對比的數字、要求動作都要換'))
+        for i, t in enumerate(v):
+            if t and i < len((last or {}).get(s, [])) and last[s][i] and opening_type(t) == opening_type(last[s][i]) != '其他':
+                res.append(('⚠️', '同店同格開頭跟上週一樣', f'{s}{"AB"[i]}：連兩週都用{OPEN_LABEL[opening_type(t)]}開頭'))
+    cells = [(f'{s}{"AB"[i]}', opening_type(t)) for s, v in comments.items() for i, t in enumerate(v) if t]
+    for name in OPEN_LABEL:
+        cs = [c for c, o in cells if o == name]
+        if name != '其他' and len(cells) >= 6 and len(cs) > len(cells) * OPEN_SHARE:
+            res.append(('⚠️', '開頭寫法太集中', f'{len(cs)}/{len(cells)} 格都用{OPEN_LABEL[name]}開頭：{"、".join(cs)} → 至少一半改用其他開頭（先講結論、先講對比、先講上週追蹤結果、先講問題）'))
+    return res
+
+
+def cross_checks(comments, last=None, source=None, older=None):
+    """comments／last／older：{店: [A, B]}（本週／上週定稿／上上週）。回傳 [(狀態, 規則, 說明)]。"""
+    res = week_checks(comments, last, older)
     cells = [(f'{s}{"AB"[i]}', s, t) for s, v in comments.items() for i, t in enumerate(v) if t]
     olds = [(f'上週{s}{"AB"[i]}', s, t) for s, v in (last or {}).items() for i, t in enumerate(v) if t]
 
@@ -207,6 +258,35 @@ def cross_checks(comments, last=None, source=None):
         res.append(('⚠️', '上週評語來源', f'不是信箱寄出的定稿（{source}）；比對與追蹤用的是自己上週的版本，請確認'))
     if not res:
         res.append(('✅', '重複與選題', '本週各格、與上週定稿都沒有重複'))
+    return res
+
+
+SPEECH_TYPES = ['數字總覽', '主軸先行', '門市故事', '追蹤回顧', '月進度']
+
+
+def speech_type(md):
+    """講稿.md 標的結構（標題或任一行寫「結構：主軸先行」）；沒標回 None。"""
+    m = re.search(r'結構[：:]\s*(' + '|'.join(SPEECH_TYPES) + ')', md)
+    return m[1] if m else None
+
+
+def _speech_open(md):
+    body = [l.strip() for l in md.splitlines() if l.strip() and not l.lstrip().startswith('#')]
+    return re.split(r'[。；]', body[0], 1)[0] if body else ''
+
+
+def speech_checks(md, last_md=None):
+    """週報講稿跨週多元化（2026-11-13 加）：要標結構、不能連兩週同一種、開場句不能跟上週同骨架。"""
+    res, kind = [], speech_type(md)
+    if not kind:
+        res.append(('⚠️', '講稿沒標結構', f'標題加「結構：{"／".join(SPEECH_TYPES)}」其中一種（見 講稿修改紀錄.md「講稿多元化」）'))
+    if last_md:
+        last_kind = speech_type(last_md) or '數字總覽'          # 舊講稿沒標的都是數字總覽型
+        if (kind or '數字總覽') == last_kind:
+            res.append(('❌', '講稿結構跟上週一樣', f'上週是「{last_kind}」，這週換另一種結構'))
+        n, frag = lcs(_speech_open(md), _speech_open(last_md))
+        if n >= 10:
+            res.append(('⚠️', '講稿開場句跟上週同骨架', f'「{frag}」→ 換開場（先講主軸、先講一家店、先講上週追蹤結果）'))
     return res
 
 
