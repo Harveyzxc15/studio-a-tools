@@ -1279,7 +1279,7 @@ def main():
     try:                                            # 大單（企業戶／通訊業、同客戶多台）＋夥伴零搭售，選題矩陣用
         import bulk
         bd = bulk.run(P.full, REGION, P.wk_start, P.wk_end, 'DSS' if a.tpp else 'EPB', work)
-        hit = [f'{s} {c} {b["n"]} 台' for s, v in bd['stores'].items() for c, b in v['bulk'].items()]
+        hit = [f'{s} {c} {b["big_n"]} 台' for s, v in bd['stores'].items() for c, b in v['bulk'].items()]
         log('大單：' + ('、'.join(hit) if hit else '沒有'))
     except (Exception, SystemExit) as e:
         warn(f'大單辨識沒有跑（{str(e)[:80]}），選題矩陣的零搭售沒排除大單')

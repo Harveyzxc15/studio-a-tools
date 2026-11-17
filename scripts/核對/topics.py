@@ -6,7 +6,7 @@
   units:<品類> 主機台數                    tpp  3PP 金額        speaker  喇叭金額
   arpedia  ARpedia 套數   coupon  抵用券兌換率   mysetup  MySetup 提交率
   film:<品類>  保貼  case:<品類> 保護殼  lens:iPhone 鏡頭貼  pencil:iPad 原廠筆
-  kb:iPad 鍵盤  band:Watch 錶帶  bag:CPU 電腦包
+  kb:iPad 鍵盤  band:Watch 錶帶  bag:CPU 電腦包  office:CPU Office
 品類：CPU iPad iPhone Watch AirPods
 """
 import re
@@ -29,6 +29,7 @@ _METRIC = [
     (r'原廠筆|Pencil', 'pencil', 'iPad'),
     (r'鍵盤(?!膜)', 'kb', 'iPad'),
     (r'電腦包', 'bag', 'CPU'),
+    (r'Office', 'office', 'CPU'),
     (r'保貼|螢幕保護貼', 'film', 'iPhone'),
     (r'保護殼|殼貼|殼', 'case', 'iPhone'),
 ]
@@ -36,7 +37,7 @@ _UNITS = re.compile(r'銷售(?:由)?\s*\d+\s*[台隻支組]|由\s*\d+\s*[台隻�
 ACTION = re.compile(r'請(?:店長|門市|夥伴|導師|成交的夥伴)|店長每日|店長於')
 LABEL = {'zero': '零搭售', 'ac': 'AC+', 'units': '台數', 'tpp': '3PP 金額', 'speaker': '喇叭', 'arpedia': 'ARpedia',
          'coupon': '抵用券兌換', 'mysetup': 'MySetup', 'film': '保貼', 'case': '保護殼', 'lens': '鏡頭貼',
-         'pencil': '原廠筆', 'kb': '鍵盤', 'band': '錶帶', 'bag': '電腦包'}
+         'pencil': '原廠筆', 'kb': '鍵盤', 'band': '錶帶', 'bag': '電腦包', 'office': 'Office'}
 
 
 def label(key):

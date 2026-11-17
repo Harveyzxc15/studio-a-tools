@@ -29,7 +29,7 @@ PAIR_BLOCKS = {
     'iPhone 配件件數': {'保貼數量': 'film:iPhone', '保護殼數量': 'case:iPhone', '鏡頭貼數量': 'lens:iPhone'},
     'iPad 配件': {'原廠筆數量': 'pencil:iPad', '保護殼數量': 'case:iPad', '保貼數量': 'film:iPad', '鍵盤數量': 'kb:iPad'},
     'Watch 配件': {'錶帶數量': 'band:Watch', '保貼數量': 'film:Watch'},
-    'CPU 配件': {'保貼數量': 'film:CPU', '電腦包數量': 'bag:CPU'},
+    'CPU 配件': {'保貼數量': 'film:CPU', '電腦包數量': 'bag:CPU', 'Office數量': 'office:CPU'},
 }
 AC_DEV = {'CPU': 'CPU', 'Watch': 'Watch', 'iPad': 'iPad', 'iPhone': 'iPhone', 'Airpods': 'AirPods', 'AirPods': 'AirPods'}
 RATE_KEYS = ('zero', 'ac', 'coupon', 'mysetup')
