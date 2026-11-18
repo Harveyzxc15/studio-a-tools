@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,7 @@ BLOCK = ('EPBReportQuery', 'EPBQueryGuard', 'EPBDocPdf', 'EPBrowser')
 TT = {'銷售': 'A', '銷退': 'E', '訂金': 'G', '尾款': 'H', '退訂': 'J'}
 ALL = [c for st in STORES.values() for c in st]          # 13 店門市代碼
 _state = {}
+_lock = threading.Lock()                               # 保固圖用多條執行緒同時查：建表與查詢都要排隊
 
 
 class EPBBlocked(RuntimeError):
@@ -94,7 +96,7 @@ def _db():
         'cat4_id': txt('類別4代碼'), 'cat5_id': txt('類別5代碼'), 'cat6_id': txt('類別6代碼'),
         'brand_id': txt('品牌代碼'),
     })
-    con = sqlite3.connect(':memory:')
+    con = sqlite3.connect(':memory:', check_same_thread=False)
     con.execute('PRAGMA case_sensitive_like = ON')          # Oracle 的 LIKE 分大小寫
     df.to_sql('poslinev_bi', con, index=False)
     con.execute('CREATE INDEX i1 ON poslinev_bi (doc_date, shop_id)')
@@ -117,11 +119,14 @@ def epb(sql, max_rows=10000):
         hi = max(dates)
         if 'DOC_DATE<TO_DATE' in sql.replace(' ', '').upper():        # 「< 迄日+1」的寫法
             hi = (dt.date.fromisoformat(hi) - dt.timedelta(days=1)).isoformat()
-        check_covered(min(dates), hi, shops)
+        with _lock:                                    # files()／missing_days 也共用 _state
+            check_covered(min(dates), hi, shops)
     q = _TO_CHAR.sub(r'substr(\1,1,10)', _TO_DATE.sub(r"'\1'", sql))
-    cur = _db().execute(q)
-    cols = [c[0].split('.')[-1].upper() for c in cur.description]
-    return [{k: '' if v is None else str(v) for k, v in zip(cols, r)} for r in cur.fetchmany(max_rows)]
+    with _lock:
+        cur = _db().execute(q)
+        cols = [c[0].split('.')[-1].upper() for c in cur.description]
+        rows = cur.fetchmany(max_rows)
+    return [{k: '' if v is None else str(v) for k, v in zip(cols, r)} for r in rows]
 
 
 def _patch_engine(eng):

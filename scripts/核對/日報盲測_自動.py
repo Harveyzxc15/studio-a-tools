@@ -149,6 +149,22 @@ def export_message(day, lack, stage, bad=None):
             f'就會自動同步到 mini；收到後自動開始寫，最晚等到 {EXPORT_DEADLINE:%H:%M}（每小時提醒一次）' + warn)
 
 
+def start_warranty_chart():
+    """匯出檔到齊 → 背景跑每日保固圖（北一、北二各一張截圖推 Discord），跟盲測同時進行。
+    原本 mini 12:00 的 com.bob.warranty-daily 要連 EPB，11/16 起停用；改由這裡觸發。結束前等它跑完（launchd 會收掉子程序）。"""
+    import atexit
+    script = Path(__file__).resolve().parent.parent / 'warranty_daily_push.py'
+    logf = Path.home() / '工具中心' / '輸出' / '每日追蹤主機' / 'push.log'
+    logf.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(logf, 'a', encoding='utf-8')
+    fh.write(f'\n== {dt.datetime.now():%F %T} 匯出檔模式（日報盲測觸發）\n')
+    fh.flush()
+    p = subprocess.Popen([sys.executable, str(script)], cwd=script.parent, stdout=fh, stderr=subprocess.STDOUT,
+                         env={**os.environ, 'EPB_OFFLINE': '1'})
+    atexit.register(p.wait)
+    log('每日保固圖已開始跑（log：輸出/每日追蹤主機/push.log）')
+
+
 def wait_for_export(day, wait, notify=None):
     """匯出檔模式：等匯出檔涵蓋當月 1 日～day 每一天（13 店）。缺就推提醒、每 10 分鐘再看、每小時再提醒；回傳還缺的 {門市: [日期]}。"""
     import epb_offline as EO
@@ -671,6 +687,8 @@ def main():
             lack = wait_for_export(day, wait, notify=None if dry else post)
             if lack:
                 notes.append(f'⚠️ EPB 匯出檔沒涵蓋本月 1 日～{md}（缺 {len(lack)} 店）：只用門市日報附件寫')
+            elif not dry and day == (dt.date.today() - dt.timedelta(days=1)).strftime('%Y%m%d'):
+                start_warranty_chart()
         miss = wait_for_files(day, wait, notify=None if dry else post)
         check_lines = check_message(day, miss, False).splitlines()[1:]      # 網站跟 Discord 同一份（去掉標題）
         regions = list(DF.STORES)

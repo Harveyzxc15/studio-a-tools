@@ -20,6 +20,12 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, range_boundaries
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import os
+OFFLINE = os.environ.get('EPB_OFFLINE') == '1'          # 匯出檔模式（2026-11-18）：不連 EPB，改讀 EPBrowser 手動匯出檔
+if OFFLINE:
+    sys.path.insert(0, str(Path(__file__).resolve().parent / '核對'))
+    import epb_offline
+    epb_offline.enable()                                  # 把 warranty_report_all.epb 換成讀匯出檔的 SQLite
 import warranty_report_all as W
 
 CHROME  = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -217,8 +223,15 @@ def main():
             log.write(s); sys.__stdout__.write(s); return len(s)
         def flush(self):
             sys.__stdout__.flush()
-    with contextlib.redirect_stdout(Tee()):
-        xlsx = W.main()
+    try:
+        with contextlib.redirect_stdout(Tee()):
+            xlsx = W.main()
+    except Exception as e:                                # 例：匯出檔沒涵蓋本週日～昨天
+        msg = f'⚠️ 每日追蹤主機沒產出：{type(e).__name__}: {e}'
+        print(msg)
+        if not dry:
+            post_discord(msg, [])
+        sys.exit(1)
     out = log.getvalue()
     period = re.search(r'區間：(\S+ ～ \S+)', out).group(1)
     warns = [l.strip() for l in out.splitlines() if l.strip().startswith('⚠️')]
@@ -228,7 +241,8 @@ def main():
     hosts = sum(_num(wb[n].cell(r, c).value) for n in SHEETS for r in range(4, wb[n].max_row + 1)
                 for c in range(2, 2 + len(W.CATS) * 5, 5))
     if hosts == 0:
-        msg = f'⚠️ 每日追蹤主機 {period}：EPB 主機台數全部是 0（公司 VPN 可能沒連上），今天沒推圖'
+        why = '匯出檔可能少了資料' if OFFLINE else '公司 VPN 可能沒連上'
+        msg = f'⚠️ 每日追蹤主機 {period}：EPB 主機台數全部是 0（{why}），今天沒推圖'
         print(msg)
         if not dry:
             post_discord(msg, [])
