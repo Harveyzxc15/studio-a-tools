@@ -8,6 +8,7 @@
 import datetime as dt
 import glob
 import os
+import threading
 from pathlib import Path
 
 import openpyxl
@@ -43,7 +44,7 @@ def _read(path):
             continue
         rows.append(['' if r[i] is None else str(r[i]) for i in idx])
     df = pd.DataFrame(rows, columns=NEED)
-    tmp = cache.with_suffix('.tmp')
+    tmp = cache.with_name(f'{cache.name}.{os.getpid()}.{threading.get_ident()}.tmp')   # 多條執行緒同時建快取不互搶
     df.to_csv(tmp, index=False)
     os.replace(tmp, cache)                       # 寫完才換上，中斷不會留下半份快取
     for old in CACHE.glob(f'{glob.escape(path.stem)}__*.csv'):
@@ -81,6 +82,10 @@ def check_file(path):
         return f'缺欄位 {"、".join(m["缺欄位"])}'
     if m.get('其他條件'):                         # 只匯部分品項的檔若當成完整資料，會蓋掉同日同店的完整檔
         return f'有其他篩選條件 {"、".join(m["其他條件"])}，不是完整資料'
+    try:
+        _scope(path)                              # 單據日期要是「起日, 迄日」；用「=」單一天匯出會讓涵蓋計算整個當掉
+    except Exception:
+        return f'單據日期條件看不懂（{m["單據日期"]}），請用 BETWEEN 起日～迄日匯出'
     return None
 
 

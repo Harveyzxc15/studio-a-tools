@@ -161,7 +161,13 @@ def start_warranty_chart():
     fh.flush()
     p = subprocess.Popen([sys.executable, str(script)], cwd=script.parent, stdout=fh, stderr=subprocess.STDOUT,
                          env={**os.environ, 'EPB_OFFLINE': '1'})
-    atexit.register(p.wait)
+    def finish():                                  # 卡住（例：Chrome 截圖沒回應）最多等 30 分鐘，不然 launchd 隔天不會再啟動盲測
+        try:
+            p.wait(timeout=1800)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            log('每日保固圖跑超過 30 分鐘，已中止')
+    atexit.register(finish)
     log('每日保固圖已開始跑（log：輸出/每日追蹤主機/push.log）')
 
 
