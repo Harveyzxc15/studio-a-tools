@@ -264,7 +264,9 @@ def check_numbers(text, facts, stores):
         last_end = tok['end'] - 1
         per = _last_of(['上週', '前週', '本週'], seg)   # 只看「上一個數字到這個數字」之間
         clause = text[max([text.rfind(c, 0, tok['pos']) for c in '，,；;。\n、']) + 1:tok['pos']]
-        if not DIFF_WORDS.search(clause):
+        # 「分別成長 77 萬、199.5 萬」：「、」列舉共用前面的增減字，所以增減字看到逗號為止（11/17 北二試跑 A）
+        sentence = text[max([text.rfind(c, 0, tok['pos']) for c in '，,；;。\n']) + 1:tok['pos']]
+        if not DIFF_WORDS.search(sentence):
             # 前面沒有「增加／減少／成長／差距…」就不能用衍生的差額、增減%、百分點差來對
             hits = [h for h in hits if h[4] or h[3].startswith('比值')]
         if per and hits:

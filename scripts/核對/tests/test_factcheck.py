@@ -143,6 +143,23 @@ class YoYDiff(unittest.TestCase):
         self.assertEqual(res[0]['status'], '❌')
 
 
+class ListedDiff(unittest.TestCase):
+    def test_diff_word_carries_over_comma_list(self):
+        # 11/17 北二試跑 A：「分別成長 5.6%(約 77 萬)、12.4%(約 199.5 萬)」第二個差額在「、」後面，看不到「成長」而被判找不到
+        F = []
+        for s, a, b in (('裕隆城', 14_500_000, 13_730_000), ('板橋遠百', 18_105_251, 16_109_962)):
+            F += [fc.fact(a, 'amt', s, f'{s} 總營業額 月累', f'{s}|總營業額', '門市日報', '月累'),
+                  fc.fact(b, 'amt', s, f'{s} 總營業額 上月同期', f'{s}|總營業額', '門市日報', '上月同期')]
+        text = '門市以裕隆城、板橋遠百進度較佳，兩店也較上月同期分別成長約 77 萬、約 199.5 萬'
+        res = fc.check_numbers(text, F, fc.N2_STORES)
+        got = {r['tok']['text']: r['status'] for r in res}
+        self.assertEqual(got['199.5 萬'], '✅')
+        self.assertNotEqual(got['77 萬'], '❌')          # 「兩店分別」對哪店本來就只給 ⚠️，不在這次範圍
+        # 句子裡沒有增減字，「、」列舉的數字還是不能拿差額來對
+        res = fc.check_numbers('板橋遠百營業額 1,810 萬、199.5 萬', F, fc.N2_STORES)
+        self.assertEqual({r['tok']['text']: r['status'] for r in res}['199.5 萬'], '❌')
+
+
 class BestMatch(unittest.TestCase):
     def test_picks_closest_source(self):
         # 11/1 草稿：同一個數值對得到好幾筆時，核對單要顯示真正的來源
