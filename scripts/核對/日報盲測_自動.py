@@ -130,6 +130,54 @@ def wait_for_files(day, wait, notify=None):
         time.sleep(600)
 
 
+EXPORT_DEADLINE = dt.time(18, 0)     # 匯出檔模式：等 EPBrowser 匯出檔最晚到幾點，過了只用門市日報附件寫
+
+
+def export_message(day, lack, stage, bad=None):
+    md = f'{day[4:6]}/{day[6:]}'
+    days = sorted({x for v in lack.values() for x in v})
+    span = ('、'.join(f'{x:%m/%d}' for x in days) if len(days) <= 4 else f'{days[0]:%m/%d}～{days[-1]:%m/%d} 共 {len(days)} 天')
+    names = '、'.join(n for c, (_, n) in ALL_SHOPS.items() if c in lack)
+    warn = ''.join(f'\n⚠️ {f}：{why}，這份先不用' for f, why in (bad or {}).items())
+    if stage == 'got':
+        return f'📥 {md} EPB 匯出檔收到了，開始寫兩區盲測' + warn
+    if stage == 'late':
+        return (f'⚠️ {EXPORT_DEADLINE:%H:%M} 還沒收到 EPB 匯出檔（缺 {span}；{names}）：今天只用門市日報附件寫，'
+                f'沒有保固圖口徑／重點項目／新品／大單／去年同期' + warn)
+    return (f'📥 還沒收到 EPB 匯出檔：缺 {span}（{names}）\n'
+            f'EPBrowser「銷售分析作業」匯出缺的日期、13 店、版型照舊，存到 Downloads/EPB匯出 '
+            f'就會自動同步到 mini；收到後自動開始寫，最晚等到 {EXPORT_DEADLINE:%H:%M}（每小時提醒一次）' + warn)
+
+
+def wait_for_export(day, wait, notify=None):
+    """匯出檔模式：等匯出檔涵蓋當月 1 日～day 每一天（13 店）。缺就推提醒、每 10 分鐘再看、每小時再提醒；回傳還缺的 {門市: [日期]}。"""
+    import epb_offline as EO
+    d = dt.date(int(day[:4]), int(day[4:6]), int(day[6:]))
+    reminded, said, warned = 0.0, False, set()
+    while True:
+        EO.refresh()
+        lack = EO.X.missing_days(EO.files(), d.replace(day=1), d, list(ALL_SHOPS))
+        bad = {f: w for f, w in EO._state.get('bad', {}).items() if f not in warned}
+        late = wait and dt.datetime.now().time() >= EXPORT_DEADLINE
+        try:
+            msg = None
+            if lack and not late and wait and (time.time() - reminded >= 3600 or bad):
+                msg, reminded, said = export_message(day, lack, 'wait', bad), time.time(), True
+            elif lack and (late or not wait):
+                msg = export_message(day, lack, 'late', bad)
+            elif not lack and (said or bad):
+                msg = export_message(day, lack, 'got', bad)
+            if notify and msg:
+                notify(msg)
+            warned |= set(bad)
+        except Exception as e:
+            log('匯出檔提醒推不出去：', e)
+        if not lack or not wait or late:
+            return lack
+        log('匯出檔還沒到：', lack, '→ 10 分鐘後再看')
+        time.sleep(600)
+
+
 def acpp_facts(day):
     """保固圖口徑（warranty_report_all.query_period）：只算 ACPP+、排認證機。回傳 {區: (facts, 表格文字)}。"""
     import warranty_report_all as W
@@ -614,7 +662,15 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
     md = f'{day[4:6]}/{day[6:]}'
     notes = []
+    offline = '--offline' in sys.argv or os.environ.get('EPB_OFFLINE') == '1'
+    if offline:                                   # 匯出檔模式：不連 EPB（epb_offline 擋 Java 橋接）
+        import epb_offline as EO
+        EO.enable()
     try:
+        if offline:
+            lack = wait_for_export(day, wait, notify=None if dry else post)
+            if lack:
+                notes.append(f'⚠️ EPB 匯出檔沒涵蓋本月 1 日～{md}（缺 {len(lack)} 店）：只用門市日報附件寫')
         miss = wait_for_files(day, wait, notify=None if dry else post)
         check_lines = check_message(day, miss, False).splitlines()[1:]      # 網站跟 Discord 同一份（去掉標題）
         regions = list(DF.STORES)
