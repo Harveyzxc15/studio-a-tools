@@ -55,7 +55,9 @@ def fact(v, u, s, l, g=None, src='', p=None):
 
 # 同一店同指標，哪些期間兩兩比較有意義（沒標期間的群組＝全部兩兩比）
 PERIOD_PAIRS = {frozenset(['月累', '目標']), frozenset(['月累', '上月同期']), frozenset(['本週', '上週']),
-                frozenset(['今日', '月累'])}
+                frozenset(['今日', '月累']),
+                # 去年同期只跟同口徑（週報產生器引擎）的本月累計比；日報「月累」跟引擎可能差一兩台，不交叉配（2026-11-18）
+                frozenset(['本月累計', '去年同期'])}
 
 
 def derive(facts):

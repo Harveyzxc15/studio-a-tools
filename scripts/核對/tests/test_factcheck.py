@@ -124,6 +124,25 @@ class Untraceable(unittest.TestCase):
         self.assertTrue(any(c[0] == '❌' and '士林' in c[2] for c in checks), checks)
 
 
+class YoYDiff(unittest.TestCase):
+    def test_month_vs_last_year_diff(self):
+        # 11/17 北二自動盲測 B：本月累計 vs 去年同期（週報產生器引擎）的差額被判「找不到」而整份剔除
+        F = []
+        for s, a, b in (('', 948, 1477), ('板橋遠百', 231, 352), ('西門', 246, 347)):
+            g = f'{s}|iPhone台數'
+            F += [fc.fact(a, 'cnt', s, f'{s or "北二區"} iPhone台數 本月累計', g, '週報產生器引擎', '本月累計'),
+                  fc.fact(b, 'cnt', s, f'{s or "北二區"} iPhone台數 去年同期', g, '週報產生器引擎', '去年同期')]
+        text = ('北二區 iPhone 銷售 948 支，較去年同期 1,477 支減少 529 支，'
+                '門市以板橋遠百減少 121 支、西門減少 101 支差異最大')
+        res = fc.check_numbers(text, F, fc.N2_STORES)
+        self.assertEqual({r['tok']['text']: r['status'] for r in res if r['status'] != '✅'}, {})
+        got = {r['tok']['text']: r['why'] for r in res}
+        self.assertIn('本月累計 vs', got['529 支'])
+        # 差額一定要寫在「減少／增加」後面才算；同一店的差額不能拿去對別店
+        res = fc.check_numbers('西門 iPhone 銷售 121 支', F, fc.N2_STORES)
+        self.assertEqual(res[0]['status'], '❌')
+
+
 class BestMatch(unittest.TestCase):
     def test_picks_closest_source(self):
         # 11/1 草稿：同一個數值對得到好幾筆時，核對單要顯示真正的來源
