@@ -52,9 +52,9 @@ def recent_msgs(days=DAYS):
 def run(dry=False):
     allow = senders()
     if not allow:
-        return [], []
+        return [], [], []
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    good, bad, replies = [], [], []
+    good, bad, replies, ignored = [], [], [], False
     for rec in sorted(recent_msgs(), key=lambda r: r.get('received', '')):
         who = (rec.get('sender') or '').lower()
         if who not in allow:
@@ -70,6 +70,14 @@ def run(dry=False):
             tmp = EXPORT_DIR / f'.mail_{h[:12]}.xlsx'       # 點開頭：掃描與同步都會跳過
             shutil.copyfile(src, tmp)
             why = X.check_file(tmp)
+            if why and why.startswith(('不是', '讀不到')) and not fn.startswith('銷售分析作業'):
+                # 同事寄的其他 xlsx（例：Yuni 每天寄的 Daily report）不是代傳檔：不通知、不回信，記下來以後不再看
+                tmp.unlink()
+                if not dry:
+                    state[h] = {'file': None, 'sender': who, 'received': rec.get('received'), 'why': '略過（不是匯出檔）',
+                                'at': dt.datetime.now().strftime('%F %T')}
+                    ignored = True
+                continue
             stamp = rec.get('received', '')[5:16].replace('-', '').replace(' ', '_').replace(':', '')
             name = f'信件_{stamp}_{who.split("@")[0]}_{re.sub(r"[/:]", "_", fn)}'
             items.append((fn, why or describe(tmp), not why))
@@ -86,7 +94,7 @@ def run(dry=False):
                             'why': why, 'at': dt.datetime.now().strftime('%F %T')}
         if items:
             replies.append((rec, items))
-    if not dry and (good or bad):
+    if not dry and (good or bad or ignored):
         STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1))
     return good, bad, replies
 

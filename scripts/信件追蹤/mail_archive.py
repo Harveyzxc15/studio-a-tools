@@ -101,9 +101,9 @@ EXPORT_SENDERS = Path('~/.config/studioa/epb_export_senders.txt').expanduser()  
 
 def keep_attachment(fn, sender):
     from mail_digest import STORE_BOXES   # 門市信箱寄的附件都是例行回報
-    if fn.lower().endswith('.xlsx') and EXPORT_SENDERS.exists() and sender.lower() in \
-            {l.split('#')[0].strip().lower() for l in EXPORT_SENDERS.read_text().splitlines()}:
-        return True                       # 代傳同事寄的匯出檔：就算從門市信箱寄、檔名有「報表」也要留
+    if fn.lower().endswith('.xlsx') and not REPORT_NAME.search(fn) and EXPORT_SENDERS.exists() and \
+            sender.lower() in {l.split('#')[0].strip().lower() for l in EXPORT_SENDERS.read_text().splitlines()}:
+        return True                       # 代傳同事寄的匯出檔：從門市信箱寄也要留（日報、報表類照舊不留）
     return (fn.lower().endswith(KEEP_EXT) and not REPORT_NAME.search(fn)
             and sender.split('@')[0].lower() not in STORE_BOXES)
 
