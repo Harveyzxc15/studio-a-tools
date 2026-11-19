@@ -22,12 +22,14 @@ from email.message import EmailMessage
 from pathlib import Path
 
 import export_loader as X
-from epb_offline import EXPORT_DIR
+from daily_facts import STORES
+from epb_offline import ALL, EXPORT_DIR
 
 ARCHIVE = Path(os.environ.get('MAIL_ARCHIVE_DIR') or Path(__file__).resolve().parent.parent / '信件追蹤' / 'archive')
 SENDERS = Path(os.environ.get('EPB_EXPORT_SENDERS') or '~/.config/studioa/epb_export_senders.txt').expanduser()
 STATE = EXPORT_DIR / '_mail_imported.json'
 DAYS = 3
+NAMES = {c: n for st in STORES.values() for c, n in st.items()}      # 門市代碼 → 店名
 IMAP_ENV = Path('~/.config/studioa/imap.env').expanduser()     # 公司信箱帳號（mail_archive 同一組）；回信走 SMTP 465
 
 
@@ -108,6 +110,9 @@ def describe(path):
     if end < b:
         return (f'{span}（{len(st)} 店），但 {md(b)} 是 {t[11:16]} 匯出、未過 {X.CLOSE_AFTER}，這天的資料不會採用，'
                 f'請 {X.CLOSE_AFTER} 以後或隔天再匯一次')
+    lack = [NAMES[c] for c in ALL if c not in st]           # 只勾自己區的店（例：北二 7 店）很常見，要講出來
+    if lack:
+        return f'{span}（{len(st)} 店），但少了 {"、".join(lack)}，請 13 家店一起匯出再寄一次'
     return f'{span}（{len(st)} 店），資料可以使用'
 
 
