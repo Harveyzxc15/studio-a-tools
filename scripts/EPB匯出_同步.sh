@@ -37,8 +37,13 @@ for host in HdeMac-mini.local 100.66.101.55; do
   new=$(echo "$out" | awk '/^<f/ {sub(/^[^ ]+ /,""); print}')
   echo "rsync $host OK：${new:-（沒有新檔）}"
   if [ -n "$new" ]; then
-    msg="📥 EPB 匯出檔已同步到 mini：$(echo "$new" | awk 'NR>1{printf "、"} {printf "%s", $0}')"   # paste -d 只吃分隔字的第一個位元組，「、」會變亂碼
-    $SSH "h@$host" "/usr/bin/python3 -c '$NOTIFY' \"$msg\"" || echo "Discord 通知失敗"
+    # mini 讀檔後推「涵蓋哪天、能不能用、盲測齊了沒」；檔名走 stdin（有空白、括號）
+    printf '%s\n' "$new" | $SSH "h@$host" 'cd ~/工具中心/scripts/核對 && /usr/bin/python3 -W ignore 匯出檔通知.py' && notified=1 || notified=0
+    if [ "$notified" = 0 ]; then              # 詳細通知失敗 → 至少推檔名
+      echo "詳細通知失敗，改推簡單通知"
+      msg="📥 EPB 匯出檔已同步到 mini：$(echo "$new" | awk 'NR>1{printf "、"} {printf "%s", $0}')"   # paste -d 只吃分隔字的第一個位元組，「、」會變亂碼
+      $SSH "h@$host" "/usr/bin/python3 -c '$NOTIFY' \"$msg\"" || echo "Discord 通知失敗"
+    fi
   fi
   exit 0
 done

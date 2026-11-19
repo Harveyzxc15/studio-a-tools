@@ -104,12 +104,23 @@ def _paths(paths):
     return sorted(glob.glob(str(paths))) if isinstance(paths, (str, Path)) else list(paths)
 
 
+CLOSE_AFTER = '22:30'          # 這個時間以後匯出的「當天」資料算數（13 店都已閉店，2026-11-19 使用者定）
+
+
+def counted_end(b, t):
+    """匯出檔迄日 b、導出時間 t → 實際算涵蓋到哪天：當天資料要 CLOSE_AFTER 以後匯出才算，之前匯的只算到前一天。"""
+    if not t:
+        return b
+    day = pd.Timestamp(t[:10])
+    return min(b, day if t[11:16] >= CLOSE_AFTER else day - pd.Timedelta(days=1))
+
+
 def _covered_days(paths):
-    """{門市代碼: 有匯出檔涵蓋的日期集合}。匯出當天的資料還沒過完帳，不算涵蓋（之後補匯會用新檔蓋掉）。"""
+    """{門市代碼: 有匯出檔涵蓋的日期集合}。匯出當天要閉店後（CLOSE_AFTER）才算，之前匯的當天資料還沒結完帳。"""
     out = {}
     for a, b, st, t in (_scope(p) for p in _paths(paths)):
         if t:
-            b = min(b, pd.Timestamp(t[:10]) - pd.Timedelta(days=1))
+            b = counted_end(b, t)
         days = {x.date() for x in pd.date_range(a, b)} if b >= a else set()
         for s in st:
             out.setdefault(s, set()).update(days)
