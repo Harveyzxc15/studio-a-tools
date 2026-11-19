@@ -272,13 +272,20 @@ def rewrite_tail(n=70):
 # ---------------------------------------------------------------- 4. 撞句
 def overlaps(text, others, n=8):
     """跟 others 共同的長片語（去掉數字標點後 ≥ n 字）。"""
+    # 不用 SequenceMatcher：它只沿一條對齊路徑找，順序不同的共同片語會漏（11/18 北一 C 改完才冒出第二句）
     found = set()
     for o in others:
-        sm = difflib.SequenceMatcher(None, text, o, autojunk=False)
-        for m in sm.get_matching_blocks():
-            seg = text[m.a:m.a + m.size].strip('，、。； ')
+        i = 0
+        while i < len(text):
+            j = i
+            while j < len(text) and text[i:j + 1] in o:      # 從 i 往後延伸到 o 裡找不到為止
+                j += 1
+            seg = text[i:j].strip('，、。； ')
             if len(re.sub(r'[\d\s.,%，、。；A-Za-z+]', '', seg)) >= n:
                 found.add(seg)
+                i = j
+            else:
+                i += 1
     return sorted(found, key=len, reverse=True)
 
 
